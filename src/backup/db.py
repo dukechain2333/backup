@@ -10,6 +10,7 @@ from . import paths
 _COLUMNS = (
     "name", "source", "dest", "oncalendar", "schedule_human",
     "keep", "created_at", "last_run_at", "last_status", "last_message",
+    "job_id", "last_snapshot", "blocked_reason",
 )
 
 _SCHEMA = """
@@ -23,7 +24,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at     TEXT NOT NULL,
     last_run_at    TEXT,
     last_status    TEXT,
-    last_message   TEXT
+    last_message   TEXT,
+    job_id         TEXT,
+    last_snapshot  TEXT,
+    blocked_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
@@ -44,6 +48,9 @@ class Job:
     last_run_at: Optional[str] = None
     last_status: Optional[str] = None
     last_message: Optional[str] = None
+    job_id: Optional[str] = None
+    last_snapshot: Optional[str] = None
+    blocked_reason: Optional[str] = None
 
 
 # Columns introduced after the initial release. connect() ensures each exists,
@@ -52,7 +59,9 @@ class Job:
 # ADD a NOT NULL column without a default to a populated table. Append future
 # columns here; never remove or reorder existing entries.
 _ADDED_COLUMNS = [
-    # ("jobs", "future_col", "TEXT"),
+    ("jobs", "job_id", "TEXT"),
+    ("jobs", "last_snapshot", "TEXT"),
+    ("jobs", "blocked_reason", "TEXT"),
 ]
 
 
@@ -98,12 +107,14 @@ def add_job(conn: sqlite3.Connection, job: Job) -> None:
     try:
         conn.execute(
             "INSERT INTO jobs (name, source, dest, oncalendar, schedule_human, "
-            "keep, created_at, last_run_at, last_status, last_message) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "keep, created_at, last_run_at, last_status, last_message, "
+            "job_id, last_snapshot, blocked_reason) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 job.name, job.source, job.dest, job.oncalendar,
                 job.schedule_human, job.keep, job.created_at,
                 job.last_run_at, job.last_status, job.last_message,
+                job.job_id, job.last_snapshot, job.blocked_reason,
             ),
         )
     except sqlite3.IntegrityError as exc:

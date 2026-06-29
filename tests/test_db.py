@@ -138,3 +138,45 @@ def test_connect_upgrades_old_db_with_added_columns(tmp_path, monkeypatch):
     conn2 = connect(path)            # reopened by "new" code -> migrates in place
     assert dbmod._column_exists(conn2, "jobs", "notes") is True
     assert get_job(conn2, "docs").source == "/a/docs"  # data survived the upgrade
+
+
+def test_new_jobs_have_identity_columns(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, make_job())
+    job = get_job(conn, "docs")
+    assert job.job_id is None
+    assert job.last_snapshot is None
+    assert job.blocked_reason is None
+
+
+def test_identity_columns_are_updatable(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, make_job())
+    update_job(conn, "docs", job_id="abc123", last_snapshot="2026-06-29_01-00-00",
+               blocked_reason="dest moved")
+    job = get_job(conn, "docs")
+    assert job.job_id == "abc123"
+    assert job.last_snapshot == "2026-06-29_01-00-00"
+    assert job.blocked_reason == "dest moved"
+
+
+def test_old_db_upgrades_with_identity_columns(tmp_path):
+    import backup.db as dbmod
+    path = tmp_path / "jobs.db"
+    # Build a pre-feature jobs table (no identity columns)
+    import sqlite3
+    raw = sqlite3.connect(str(path))
+    raw.executescript("""
+        CREATE TABLE jobs (name TEXT PRIMARY KEY, source TEXT NOT NULL UNIQUE,
+        dest TEXT NOT NULL, oncalendar TEXT NOT NULL, schedule_human TEXT NOT NULL,
+        keep INTEGER NOT NULL, created_at TEXT NOT NULL, last_run_at TEXT,
+        last_status TEXT, last_message TEXT);
+        INSERT INTO jobs VALUES ('legacy','/s','/d','hourly','every hour',7,
+        '2026-06-01T00:00:00',NULL,NULL,NULL);
+    """)
+    raw.commit()
+    raw.close()
+    conn = dbmod.connect(path)  # new code opens it
+    for col in ("job_id", "last_snapshot", "blocked_reason"):
+        assert dbmod._column_exists(conn, "jobs", col)
+    assert get_job(conn, "legacy").source == "/s"  # data survived
