@@ -210,3 +210,14 @@ def test_preview_missing_source_returns_empty(tmp_path):
     job = make_job(tmp_path)
     shutil.rmtree(job.source)
     assert preview_backup(job) == []
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_preview_includes_symlinks(tmp_path):
+    job = make_job(tmp_path)
+    src = Path(job.source)
+    (src / "real.txt").write_text("r")
+    (src / "alink.txt").symlink_to(src / "real.txt")
+    files = preview_backup(job)
+    assert "real.txt" in files
+    assert "alink.txt" in files  # archive mode preserves symlinks; preview must show them

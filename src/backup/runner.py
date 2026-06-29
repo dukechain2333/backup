@@ -145,9 +145,11 @@ def preview_backup(job: db.Job) -> List[str]:
         return []
     tmp = tempfile.mkdtemp(prefix="backup-preview-")
     try:
-        cmd = ["rsync", "-rn", *IGNORE_FILTER, "--out-format=%n",
+        cmd = ["rsync", "-an", *IGNORE_FILTER, "--out-format=%n",
                "%s/" % source, "%s/" % tmp]
         result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        return []
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if result.returncode not in _RSYNC_OK:

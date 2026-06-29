@@ -378,3 +378,17 @@ def test_run_force_clears_blocked_and_runs(xdg, tmp_path, monkeypatch):
     db.update_job(conn, "proj", blocked_reason="dest moved")
     assert cli.main(["run", "proj", "--force"]) == 0
     assert db.get_job(conn, "proj").blocked_reason is None
+
+
+def test_preview_missing_source_errors(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    shutil.rmtree(src)  # source gone after registration
+    rc = cli.main(["preview", "proj"])
+    assert rc != 0
+    assert "not a directory" in capsys.readouterr().err.lower()
