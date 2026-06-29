@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from . import db, paths
+from . import db, integrity, paths
 
 TIMESTAMP_FMT = "%Y-%m-%d_%H-%M-%S"
 _RSYNC_OK = {0, 24}  # 24 = some source files vanished during transfer
@@ -57,11 +57,24 @@ def _prune(job: db.Job) -> None:
 
 
 def run_backup(
-    job: db.Job, conn=None, now: Optional[datetime] = None
+    job: db.Job, conn=None, now: Optional[datetime] = None, force: bool = False
 ) -> RunResult:
     now = now or datetime.now()
     source = Path(job.source)
     dest_base = Path(job.dest)
+
+    if job.blocked_reason and not force:
+        return _finish(
+            job, conn, now, "blocked",
+            "still blocked: %s; run 'backup run %s --force' to override"
+            % (job.blocked_reason, job.name), None)
+
+    # Ensure the job has a stable identity (legacy jobs created before this feature)
+    if job.job_id is None:
+        import uuid
+        job.job_id = uuid.uuid4().hex
+        if conn is not None:
+            db.update_job(conn, job.name, job_id=job.job_id)
 
     if not source.is_dir():
         return _finish(job, conn, now, "failed",
@@ -69,6 +82,14 @@ def run_backup(
     if not dest_base.is_dir():
         return _finish(job, conn, now, "failed",
                        "destination missing: %s" % dest_base, None)
+
+    if not force:
+        ok, reason = integrity.verify(job)
+        if not ok:
+            if conn is not None:
+                db.update_job(conn, job.name, blocked_reason=reason)
+            return _finish(job, conn, now, "blocked",
+                           "verification failed: %s" % reason, None)
 
     snaps_dir = _snapshots_dir(job)
     snaps_dir.mkdir(parents=True, exist_ok=True)
@@ -97,7 +118,12 @@ def run_backup(
     _update_latest(job, final)
     _prune(job)
 
-    msg = "snapshot %s (%d kept)" % (stamp, len(list_snapshots(job)))
+    integrity.write_marker(job, stamp)
+    if conn is not None:
+        db.update_job(conn, job.name, last_snapshot=stamp, blocked_reason=None)
+
+    suffix = " (forced, re-baselined)" if force else ""
+    msg = "snapshot %s (%d kept)%s" % (stamp, len(list_snapshots(job)), suffix)
     return _finish(job, conn, now, "ok", msg, str(final))
 
 

@@ -77,3 +77,64 @@ def test_missing_source_fails(tmp_path):
     shutil.rmtree(job.source)
     res = run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
     assert res.status == "failed"
+
+
+import json as _json
+
+from backup import integrity
+from backup.db import connect, add_job, get_job
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_success_writes_marker_and_records_last_snapshot(tmp_path):
+    job = make_job(tmp_path)
+    job.job_id = "id-1"
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    res = run_backup(job, conn=conn, now=datetime(2026, 6, 28, 2, 0, 0))
+    assert res.status == "ok"
+    marker = integrity.read_marker(job)
+    assert marker["job_id"] == "id-1"
+    assert marker["last_snapshot"] == "2026-06-28_02-00-00"
+    assert get_job(conn, job.name).last_snapshot == "2026-06-28_02-00-00"
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_mismatch_blocks_and_writes_no_snapshot(tmp_path):
+    job = make_job(tmp_path)
+    job.job_id = "id-1"
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    run_backup(job, conn=conn, now=datetime(2026, 6, 28, 2, 0, 0))  # baseline
+    # Corrupt the destination: delete the marker so verify fails
+    integrity.marker_path(job).unlink()
+    reloaded = get_job(conn, job.name)
+    res = run_backup(reloaded, conn=conn, now=datetime(2026, 6, 28, 3, 0, 0))
+    assert res.status == "blocked"
+    assert get_job(conn, job.name).blocked_reason is not None
+    assert len(list_snapshots(job)) == 1  # no new snapshot created
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_blocked_latch_refuses_until_force(tmp_path):
+    job = make_job(tmp_path)
+    job.job_id = "id-1"
+    job.blocked_reason = "previously blocked"
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    res = run_backup(job, conn=conn, now=datetime(2026, 6, 28, 2, 0, 0))
+    assert res.status == "blocked"
+    assert len(list_snapshots(job)) == 0  # nothing ran
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_force_rebaselines_and_clears_blocked(tmp_path):
+    job = make_job(tmp_path)
+    job.job_id = "id-1"
+    job.blocked_reason = "previously blocked"
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    res = run_backup(job, conn=conn, now=datetime(2026, 6, 28, 2, 0, 0), force=True)
+    assert res.status == "ok"
+    assert get_job(conn, job.name).blocked_reason is None
+    assert integrity.read_marker(job) is not None
