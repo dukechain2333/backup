@@ -39,6 +39,8 @@ backup list                 # see all jobs, state, last/next run
 backup status important-project
 backup run important-project    # snapshot one job now
 backup run --all                # snapshot every job now (sequentially)
+backup logs important-project        # view this job's log (last 40 lines)
+backup run important-project --force # override an integrity block & re-baseline
 backup pause important-project  # stop future runs
 backup resume important-project
 backup snapshots important-project
@@ -58,6 +60,16 @@ the snapshot directory manually first.
 `hourly` · `daily@HH:MM` · `weekly@dow:HH:MM` (dow = mon..sun) · `every:Nh` ·
 `every:Nm`. For full control pass a raw systemd expression via the timer (see
 `man systemd.time`).
+
+### Destination integrity
+
+Each job writes a small marker (`<dest>/<name>/.backup-meta.json`) recording its
+identity and last snapshot. Before every run, `backup` checks the destination
+still matches — same job, same source, and the recorded last snapshot still
+present. If it doesn't (wrong/unmounted drive, wiped or replaced snapshots), the
+run is refused and the job is marked **blocked**; scheduled runs keep refusing
+until you reconcile. Inspect with `backup logs <name>` and, once you're sure the
+destination is correct, re-baseline with `backup run <name> --force`.
 
 ### Where things live
 

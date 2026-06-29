@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -76,6 +77,7 @@ def cmd_add(args) -> int:
         name=name, source=str(source), dest=str(dest),
         oncalendar=sched.oncalendar, schedule_human=sched.human,
         keep=args.keep, created_at=datetime.now().isoformat(timespec="seconds"),
+        job_id=uuid.uuid4().hex,
     )
     db.add_job(conn, job)
     try:
@@ -119,7 +121,10 @@ def cmd_list(args) -> int:
         "NAME", "STATE", "SCHEDULE", "LAST RUN", "SOURCE -> DEST")
     print(header)
     for job in jobs:
-        state = "active" if units.is_active(job.name) else "paused"
+        if job.blocked_reason:
+            state = "blocked"
+        else:
+            state = "active" if units.is_active(job.name) else "paused"
         last = "%s %s" % (job.last_run_at or "-", job.last_status or "")
         print("%-14s %-8s %-18s %-20s %s -> %s" % (
             job.name, state, job.schedule_human, last.strip(),
@@ -132,13 +137,18 @@ def cmd_status(args) -> int:
     job = _require_job(conn, args.name)
     if job is None:
         return 1
-    state = "active" if units.is_active(job.name) else "paused"
+    if job.blocked_reason:
+        state = "blocked"
+    else:
+        state = "active" if units.is_active(job.name) else "paused"
     print("job:       %s" % job.name)
     print("source:    %s" % job.source)
     print("dest:      %s" % job.dest)
     print("schedule:  %s (%s)" % (job.schedule_human, job.oncalendar))
     print("retention: keep %d snapshots" % job.keep)
     print("state:     %s" % state)
+    if job.blocked_reason:
+        print("blocked:   %s" % job.blocked_reason)
     print("last run:  %s [%s] %s" % (
         job.last_run_at or "-", job.last_status or "-", job.last_message or ""))
     nxt = units.next_run(job.name)
@@ -210,7 +220,7 @@ def cmd_run(args) -> int:
         ok = 0
         failed = 0
         for job in jobs:
-            result = runner.run_backup(job, conn=conn)
+            result = runner.run_backup(job, conn=conn, force=args.force)
             print("%s: %s: %s" % (job.name, result.status, result.message))
             if result.status == "ok":
                 ok += 1
@@ -222,9 +232,24 @@ def cmd_run(args) -> int:
     job = _require_job(conn, args.name)
     if job is None:
         return 1
-    result = runner.run_backup(job, conn=conn)
+    result = runner.run_backup(job, conn=conn, force=args.force)
     print("%s: %s" % (result.status, result.message))
     return 0 if result.status == "ok" else 1
+
+
+def cmd_logs(args) -> int:
+    conn = db.connect()
+    job = _require_job(conn, args.name)
+    if job is None:
+        return 1
+    logfile = paths.log_dir() / ("%s.log" % job.name)
+    if not logfile.exists():
+        print("no log yet for %r" % job.name)
+        return 0
+    lines = logfile.read_text().splitlines()
+    for line in lines[-args.lines:]:
+        print(line)
+    return 0
 
 
 def cmd_internal_run(args) -> int:
@@ -395,7 +420,14 @@ def build_parser() -> argparse.ArgumentParser:
     rn = sub.add_parser("run", help="run a backup now (one job, or --all)")
     rn.add_argument("name", nargs="?", help="job to run (omit with --all)")
     rn.add_argument("--all", action="store_true", help="run every job")
+    rn.add_argument("--force", action="store_true",
+                    help="skip integrity check, clear blocked, and re-baseline")
     rn.set_defaults(func=cmd_run)
+
+    lg = sub.add_parser("logs", help="show a job's log")
+    lg.add_argument("name")
+    lg.add_argument("--lines", type=int, default=40, help="lines to show (default 40)")
+    lg.set_defaults(func=cmd_logs)
 
     r = sub.add_parser("remove", help="delete a job")
     r.add_argument("name")

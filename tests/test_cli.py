@@ -278,3 +278,75 @@ def test_run_name_and_all_conflict(xdg, tmp_path, monkeypatch, capsys):
     _silence_systemd(monkeypatch)
     rc = cli.main(["run", "proj", "--all"])
     assert rc != 0
+
+
+def test_add_assigns_job_id(xdg, tmp_path, monkeypatch):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    conn = db.connect()
+    assert db.get_job(conn, "proj").job_id is not None
+
+
+def test_list_shows_blocked(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    conn = db.connect()
+    db.update_job(conn, "proj", blocked_reason="dest moved")
+    capsys.readouterr()
+    cli.main(["list"])
+    assert "blocked" in capsys.readouterr().out.lower()
+
+
+def test_logs_prints_log(xdg, tmp_path, monkeypatch, capsys):
+    from backup import paths
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    logfile = paths.log_dir() / "proj.log"
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    logfile.write_text("2026-06-29T00:00:00 ok: snapshot\n2026-06-29T01:00:00 blocked: x\n")
+    capsys.readouterr()
+    assert cli.main(["logs", "proj"]) == 0
+    out = capsys.readouterr().out
+    assert "blocked: x" in out
+
+
+def test_logs_missing_log(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    capsys.readouterr()
+    assert cli.main(["logs", "proj"]) == 0
+    assert "no log" in capsys.readouterr().out.lower()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_run_force_clears_blocked_and_runs(xdg, tmp_path, monkeypatch):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    (src / "f.txt").write_text("hi")
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    conn = db.connect()
+    db.update_job(conn, "proj", blocked_reason="dest moved")
+    assert cli.main(["run", "proj", "--force"]) == 0
+    assert db.get_job(conn, "proj").blocked_reason is None
