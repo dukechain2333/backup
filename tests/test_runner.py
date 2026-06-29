@@ -3,11 +3,12 @@ from __future__ import annotations
 import os
 import shutil
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from backup.db import Job
-from backup.runner import job_dir, list_snapshots, run_backup
+from backup.runner import job_dir, list_snapshots, run_backup, preview_backup
 
 
 def make_job(tmp_path, keep=7):
@@ -167,3 +168,45 @@ def test_two_runs_in_same_second_do_not_crash(tmp_path):
     r2 = run_backup(reloaded, conn=conn, now=t)  # same timestamp
     assert r2.status == "ok"                      # must not crash
     assert len(list_snapshots(job)) == 1          # same-second snapshot superseded, not duplicated
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_backupignore_excludes_files_nested(tmp_path):
+    job = make_job(tmp_path)
+    job.job_id = "id-1"
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    src = Path(job.source)
+    (src / "keep.txt").write_text("k")
+    (src / "secret.log").write_text("s")
+    (src / "sub").mkdir()
+    (src / "sub" / "keep2.txt").write_text("k2")
+    (src / "sub" / "tmp.cache").write_text("c")
+    (src / ".backupignore").write_text("*.log\n")
+    (src / "sub" / ".backupignore").write_text("*.cache\n")
+    res = run_backup(job, conn=conn, now=datetime(2026, 6, 28, 2, 0, 0))
+    assert res.status == "ok"
+    snap = list_snapshots(job)[-1]
+    assert (snap / "keep.txt").exists()
+    assert (snap / "sub" / "keep2.txt").exists()
+    assert not (snap / "secret.log").exists()       # top-level *.log ignored
+    assert not (snap / "sub" / "tmp.cache").exists() # nested *.cache ignored
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_preview_lists_included_excludes_ignored_and_writes_nothing(tmp_path):
+    job = make_job(tmp_path)
+    src = Path(job.source)
+    (src / "keep.txt").write_text("k")
+    (src / "secret.log").write_text("s")
+    (src / ".backupignore").write_text("*.log\n")
+    files = preview_backup(job)
+    assert "keep.txt" in files
+    assert "secret.log" not in files
+    assert list_snapshots(job) == []  # preview created no snapshot
+
+
+def test_preview_missing_source_returns_empty(tmp_path):
+    job = make_job(tmp_path)
+    shutil.rmtree(job.source)
+    assert preview_backup(job) == []

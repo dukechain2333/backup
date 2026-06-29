@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ from . import db, integrity, paths
 
 TIMESTAMP_FMT = "%Y-%m-%d_%H-%M-%S"
 _RSYNC_OK = {0, 24}  # 24 = some source files vanished during transfer
+IGNORE_FILTER = ["--filter", "dir-merge,- .backupignore"]
 
 
 @dataclass
@@ -101,7 +103,7 @@ def run_backup(
         shutil.rmtree(partial, ignore_errors=True)
 
     previous = list_snapshots(job)
-    cmd = ["rsync", "-a", "--delete"]
+    cmd = ["rsync", "-a", "--delete", *IGNORE_FILTER]
     if previous:
         cmd.append("--link-dest=%s" % previous[-1])
     cmd.append("%s/" % source)
@@ -130,6 +132,32 @@ def run_backup(
     suffix = " (forced, re-baselined)" if force else ""
     msg = "snapshot %s (%d kept)%s" % (stamp, len(list_snapshots(job)), suffix)
     return _finish(job, conn, now, "ok", msg, str(final))
+
+
+def preview_backup(job: db.Job) -> List[str]:
+    """Return the relative paths rsync would back up, with .backupignore applied.
+
+    Dry-run against a throwaway empty directory; writes nothing to the real
+    destination. Returns an empty list if the source is missing or rsync errors.
+    """
+    source = Path(job.source)
+    if not source.is_dir():
+        return []
+    tmp = tempfile.mkdtemp(prefix="backup-preview-")
+    try:
+        cmd = ["rsync", "-rn", *IGNORE_FILTER, "--out-format=%n",
+               "%s/" % source, "%s/" % tmp]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if result.returncode not in _RSYNC_OK:
+        return []
+    names = []
+    for line in result.stdout.splitlines():
+        name = line.strip()
+        if name and name not in (".", "./"):
+            names.append(name)
+    return sorted(names)
 
 
 def _update_latest(job: db.Job, snapshot: Path) -> None:
