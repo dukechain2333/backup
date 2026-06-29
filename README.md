@@ -44,6 +44,7 @@ backup run important-project --force # override an integrity block & re-baseline
 backup pause important-project  # stop future runs
 backup resume important-project
 backup snapshots important-project
+backup preview important-project     # list files that would be backed up (.backupignore applied)
 backup edit important-project --keep 14 --schedule weekly@sun:03:00
 backup restore important-project --to /tmp/recovered
 backup remove important-project           # keep snapshots
@@ -70,6 +71,26 @@ present. If it doesn't (wrong/unmounted drive, wiped or replaced snapshots), the
 run is refused and the job is marked **blocked**; scheduled runs keep refusing
 until you reconcile. Inspect with `backup logs <name>` and, once you're sure the
 destination is correct, re-baseline with `backup run <name> --force`.
+
+### Ignoring files (.backupignore)
+
+Drop a `.backupignore` file in the source directory — or in any subdirectory,
+like `.gitignore` — to skip files from the backup. Each line is an exclude
+pattern; rsync's globbing applies (`*`, `**`, `?`, `[...]`; a leading `/`
+anchors to that directory; a trailing `/` matches directories only; `#` lines
+are comments). Example:
+
+```
+# build artifacts
+*.log
+__pycache__/
+/node_modules
+```
+
+Preview what a run would copy (nothing is written) with
+`backup preview <name>`. Because snapshots mirror the source, newly-ignored
+files disappear from new snapshots; older snapshots keep them. The
+`.backupignore` files are backed up themselves unless you list them too.
 
 ### Where things live
 

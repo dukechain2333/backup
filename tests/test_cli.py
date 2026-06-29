@@ -99,6 +99,31 @@ def test_restore_reports_rsync_failure(xdg, tmp_path, monkeypatch, capsys):
     assert rc != 0
 
 
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_preview_prints_included_omits_ignored(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    (src / "keep.txt").write_text("k")
+    (src / "secret.log").write_text("s")
+    (src / ".backupignore").write_text("*.log\n")
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    capsys.readouterr()
+    assert cli.main(["preview", "proj"]) == 0
+    out = capsys.readouterr().out
+    assert "keep.txt" in out
+    assert "secret.log" not in out
+
+
+def test_preview_unknown_job_errors(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    rc = cli.main(["preview", "nope"])
+    assert rc != 0
+    assert "no job" in capsys.readouterr().err.lower()
+
+
 def test_add_rejects_keep_zero(xdg, tmp_path, monkeypatch, capsys):
     _silence_systemd(monkeypatch)
     src = tmp_path / "proj"; dst = tmp_path / "bak"

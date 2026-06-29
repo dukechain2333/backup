@@ -343,6 +343,22 @@ def cmd_snapshots(args) -> int:
     return 0
 
 
+def cmd_preview(args) -> int:
+    conn = db.connect()
+    job = _require_job(conn, args.name)
+    if job is None:
+        return 1
+    if not Path(job.source).is_dir():
+        return _err("source is not a directory: %s" % job.source)
+    files = runner.preview_backup(job)
+    if not files:
+        print("nothing to back up")
+        return 0
+    for path in files:
+        print(path)
+    return 0
+
+
 def cmd_restore(args) -> int:
     conn = db.connect()
     job = _require_job(conn, args.name)
@@ -412,6 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("pause", cmd_pause, "pause a job's timer"),
         ("resume", cmd_resume, "resume a job's timer"),
         ("snapshots", cmd_snapshots, "list snapshots for a job"),
+        ("preview", cmd_preview, "list files that would be backed up (.backupignore applied)"),
     ]:
         sp = sub.add_parser(cmd, help=help_)
         sp.add_argument("name")
