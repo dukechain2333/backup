@@ -13,14 +13,16 @@ cp -r "$REPO_DIR/src/backup" "$SHARE_DIR/backup"
 
 cat > "$BIN" <<EOF
 #!/usr/bin/env bash
-exec python3 -c 'import sys; sys.path.insert(0, "$SHARE_DIR"); from backup.cli import main; sys.exit(main())' "\$@"
+exec env BACKUP_SHARE_DIR="$SHARE_DIR" python3 -c 'import os, sys; sys.path.insert(0, os.environ["BACKUP_SHARE_DIR"]); from backup.cli import main; sys.exit(main())' "\$@"
 EOF
 chmod +x "$BIN"
 
 # Ensure ~/.local/bin is on PATH
-if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
-  RC="$HOME/.bashrc"
-  [ -n "${ZSH_VERSION:-}" ] && RC="$HOME/.zshrc"
+if ! echo ":$PATH:" | grep -qF ":$BIN_DIR:"; then
+  case "${SHELL:-}" in
+    */zsh) RC="$HOME/.zshrc" ;;
+    *)     RC="$HOME/.bashrc" ;;
+  esac
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC"
   echo "Added ~/.local/bin to PATH in $RC (open a new shell or 'source $RC')."
 fi
@@ -30,8 +32,8 @@ fi
 
 # Enable linger so user timers run when logged out
 if command -v loginctl >/dev/null 2>&1; then
-  if loginctl enable-linger "$USER" 2>/dev/null; then
-    echo "Enabled linger for $USER (timers run when logged out)."
+  if loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null; then
+    echo "Enabled linger for ${USER:-$(id -un)} (timers run when logged out)."
   else
     echo "Note: could not enable linger; timers run only while you are logged in."
   fi
