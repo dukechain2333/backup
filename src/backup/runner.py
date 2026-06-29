@@ -76,7 +76,7 @@ def run_backup(
     stamp = now.strftime(TIMESTAMP_FMT)
     final = snaps_dir / stamp
     partial = snaps_dir / ("%s.partial" % stamp)
-    if partial.exists():
+    if partial.is_dir() or partial.is_symlink():
         shutil.rmtree(partial, ignore_errors=True)
 
     previous = list_snapshots(job)
@@ -106,12 +106,12 @@ def _update_latest(job: db.Job, snapshot: Path) -> None:
     if link.is_symlink() or link.exists():
         try:
             link.unlink()
-        except OSError:
-            return
+        except OSError as exc:
+            _log(job, "warning: could not remove old latest symlink: %s" % exc)
     try:
         link.symlink_to(Path("snapshots") / snapshot.name)
-    except OSError:
-        pass
+    except OSError as exc:
+        _log(job, "warning: could not update latest symlink: %s" % exc)
 
 
 def _finish(job, conn, now, status, message, snapshot) -> RunResult:
