@@ -41,6 +41,11 @@ backup remove important-project           # keep snapshots
 backup remove important-project --purge   # also delete snapshots
 ```
 
+**Renaming a job** (`--rename`) moves its existing snapshot tree to the new name
+automatically. **Changing `--dest`** is refused while snapshots already exist, to
+prevent orphaning them — remove and re-add the job at the new destination, or move
+the snapshot directory manually first.
+
 ### Schedules
 
 `hourly` · `daily@HH:MM` · `weekly@dow:HH:MM` (dow = mon..sun) · `every:Nh` ·

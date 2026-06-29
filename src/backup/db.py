@@ -50,7 +50,6 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
-    conn.commit()
     return conn
 
 

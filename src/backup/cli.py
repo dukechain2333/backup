@@ -47,6 +47,10 @@ def cmd_add(args) -> int:
     name = args.name or slugify(source.name)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
         return _err("invalid name %r (use lowercase letters, digits, hyphens)" % name)
+    if args.keep < 1:
+        return _err("--keep must be at least 1")
+    if any(ord(c) < 32 for c in str(source)):
+        return _err("source path contains control characters")
 
     try:
         sched = schedule.parse_schedule(args.schedule)
@@ -69,7 +73,11 @@ def cmd_add(args) -> int:
         keep=args.keep, created_at=datetime.now().isoformat(timespec="seconds"),
     )
     db.add_job(conn, job)
-    units.install_units(name, sched.oncalendar, paths.backup_executable(), str(source))
+    try:
+        units.install_units(name, sched.oncalendar, paths.backup_executable(), str(source))
+    except RuntimeError as exc:
+        db.remove_job(conn, name)
+        return _err("failed to install timer: %s" % exc)
     print("added job %r: %s -> %s (%s, keep %d)"
           % (name, source, dest, sched.human, args.keep))
     return 0
@@ -147,7 +155,10 @@ def cmd_pause(args) -> int:
     job = _require_job(conn, args.name)
     if job is None:
         return 1
-    units.pause_units(job.name)
+    try:
+        units.pause_units(job.name)
+    except RuntimeError as exc:
+        return _err(str(exc))
     print("paused %r" % job.name)
     return 0
 
@@ -157,7 +168,10 @@ def cmd_resume(args) -> int:
     job = _require_job(conn, args.name)
     if job is None:
         return 1
-    units.resume_units(job.name)
+    try:
+        units.resume_units(job.name)
+    except RuntimeError as exc:
+        return _err(str(exc))
     print("resumed %r" % job.name)
     return 0
 
@@ -199,18 +213,32 @@ def cmd_edit(args) -> int:
         updates["schedule_human"] = sched.human
         oncalendar = sched.oncalendar
     if args.keep is not None:
+        if args.keep < 1:
+            return _err("--keep must be at least 1")
         updates["keep"] = args.keep
+
+    has_snapshots = bool(runner.list_snapshots(job))
+
     if args.dest:
         new_dest = _resolve(args.dest)
         if _is_inside(new_dest, Path(job.source)) or new_dest == Path(job.source):
             return _err("destination %s is inside source %s (would recurse)"
                         % (new_dest, job.source))
+        if str(new_dest) != job.dest and has_snapshots:
+            return _err(
+                "job %r has existing snapshots at %s; changing --dest would orphan "
+                "them. Remove and re-add the job at the new destination, or move that "
+                "directory manually." % (job.name, runner.job_dir(job)))
+        new_dest.mkdir(parents=True, exist_ok=True)
         updates["dest"] = str(new_dest)
+
     if args.rename:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.rename):
             return _err("invalid name %r" % args.rename)
         if db.get_job(conn, args.rename) is not None:
             return _err("a job named %r already exists" % args.rename)
+
+    old_job_dir = runner.job_dir(job)
 
     new_name = args.rename or job.name
     if args.rename:
@@ -218,9 +246,18 @@ def cmd_edit(args) -> int:
         updates["name"] = args.rename
     db.update_job(conn, job.name, **updates)
     updated = db.get_job(conn, new_name)
+
+    new_job_dir = runner.job_dir(updated)
+    if old_job_dir != new_job_dir and old_job_dir.exists():
+        new_job_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(old_job_dir, new_job_dir)
+
     if args.schedule or args.rename:
-        units.install_units(updated.name, oncalendar,
-                            paths.backup_executable(), updated.source)
+        try:
+            units.install_units(updated.name, oncalendar,
+                                paths.backup_executable(), updated.source)
+        except RuntimeError as exc:
+            return _err("failed to update timer: %s" % exc)
     print("updated %r" % new_name)
     return 0
 

@@ -44,7 +44,11 @@ def unit_paths(name: str) -> Tuple[Path, Path]:
 
 
 def render_service(name: str, exec_path: str, source: str) -> str:
-    return SERVICE_TEMPLATE.format(name=name, exec_path=exec_path, source=source)
+    return SERVICE_TEMPLATE.format(
+        name=name,
+        exec_path=exec_path.replace("%", "%%"),
+        source=source.replace("%", "%%"),
+    )
 
 
 def render_timer(name: str, oncalendar: str) -> str:
@@ -57,13 +61,22 @@ def _systemctl(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _systemctl_checked(*args: str) -> None:
+    result = _systemctl(*args)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "systemctl --user %s failed (code %d): %s"
+            % (" ".join(args), result.returncode, result.stderr.strip())
+        )
+
+
 def install_units(name: str, oncalendar: str, exec_path: str, source: str) -> None:
     paths.systemd_user_dir().mkdir(parents=True, exist_ok=True)
     svc, timer = unit_paths(name)
     svc.write_text(render_service(name, exec_path, source))
     timer.write_text(render_timer(name, oncalendar))
-    _systemctl("daemon-reload")
-    _systemctl("enable", "--now", _timer_unit(name))
+    _systemctl_checked("daemon-reload")
+    _systemctl_checked("enable", "--now", _timer_unit(name))
 
 
 def remove_units(name: str) -> None:
@@ -76,11 +89,11 @@ def remove_units(name: str) -> None:
 
 
 def pause_units(name: str) -> None:
-    _systemctl("disable", "--now", _timer_unit(name))
+    _systemctl_checked("disable", "--now", _timer_unit(name))
 
 
 def resume_units(name: str) -> None:
-    _systemctl("enable", "--now", _timer_unit(name))
+    _systemctl_checked("enable", "--now", _timer_unit(name))
 
 
 def run_now(name: str) -> None:

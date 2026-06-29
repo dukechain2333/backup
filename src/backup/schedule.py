@@ -69,8 +69,10 @@ def validate_oncalendar(expr: str) -> bool:
     try:
         result = subprocess.run(
             ["systemd-analyze", "calendar", expr],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=5,
         )
     except FileNotFoundError:
         return True  # systemd-analyze unavailable; trust the expression
+    except subprocess.TimeoutExpired:
+        return False
     return result.returncode == 0

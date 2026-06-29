@@ -97,3 +97,75 @@ def test_restore_reports_rsync_failure(xdg, tmp_path, monkeypatch, capsys):
     cli.main(["run", "proj"])
     rc = cli.main(["restore", "proj", "--to", str(tmp_path / "nope" / "x" / "y")])
     assert rc != 0
+
+
+def test_add_rejects_keep_zero(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"; dst = tmp_path / "bak"
+    src.mkdir(); dst.mkdir()
+    rc = cli.main(["add", "--source", str(src), "--dest", str(dst),
+                   "--schedule", "hourly", "--keep", "0"])
+    assert rc != 0
+    assert "keep" in capsys.readouterr().err.lower()
+
+
+def test_edit_rejects_keep_zero(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"; dst = tmp_path / "bak"
+    src.mkdir(); dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    rc = cli.main(["edit", "proj", "--keep", "0"])
+    assert rc != 0
+
+
+def test_add_rolls_back_on_install_failure(xdg, tmp_path, monkeypatch):
+    # systemctl returns non-zero -> install_units raises -> add must fail and not persist the job
+    class _Fail:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+    monkeypatch.setattr(units, "_systemctl", lambda *a: _Fail())
+    monkeypatch.setattr(units, "is_active", lambda name: False)
+    src = tmp_path / "proj"; dst = tmp_path / "bak"
+    src.mkdir(); dst.mkdir()
+    rc = cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    assert rc != 0
+    import backup.db as db
+    conn = db.connect()
+    assert db.get_job(conn, "proj") is None
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_edit_rename_moves_snapshot_tree(xdg, tmp_path, monkeypatch):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"; dst = tmp_path / "bak"
+    src.mkdir(); dst.mkdir()
+    (src / "f.txt").write_text("hi")
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    cli.main(["run", "proj"])
+    assert (dst / "proj" / "snapshots").is_dir()
+    assert cli.main(["edit", "proj", "--rename", "renamed"]) == 0
+    assert not (dst / "proj").exists()
+    assert (dst / "renamed" / "snapshots").is_dir()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_edit_dest_change_refused_when_snapshots_exist(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"; dst = tmp_path / "bak"; dst2 = tmp_path / "bak2"
+    src.mkdir(); dst.mkdir(); dst2.mkdir()
+    (src / "f.txt").write_text("hi")
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    cli.main(["run", "proj"])
+    rc = cli.main(["edit", "proj", "--dest", str(dst2)])
+    assert rc != 0
+    assert "orphan" in capsys.readouterr().err.lower()
+
+
+def test_edit_dest_change_allowed_without_snapshots(xdg, tmp_path, monkeypatch):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"; dst = tmp_path / "bak"; dst2 = tmp_path / "bak2"
+    src.mkdir(); dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    assert cli.main(["edit", "proj", "--dest", str(dst2)]) == 0
+    assert dst2.is_dir()
