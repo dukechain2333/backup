@@ -304,7 +304,10 @@ def test_list_shows_blocked(xdg, tmp_path, monkeypatch, capsys):
     db.update_job(conn, "proj", blocked_reason="dest moved")
     capsys.readouterr()
     cli.main(["list"])
-    assert "blocked" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    proj_lines = [line for line in out.splitlines() if line.startswith("proj")]
+    assert len(proj_lines) == 1
+    assert proj_lines[0].split()[1] == "blocked"
 
 
 def test_logs_prints_log(xdg, tmp_path, monkeypatch, capsys):
