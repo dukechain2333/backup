@@ -79,8 +79,6 @@ def test_missing_source_fails(tmp_path):
     assert res.status == "failed"
 
 
-import json as _json
-
 from backup import integrity
 from backup.db import connect, add_job, get_job
 
@@ -138,3 +136,19 @@ def test_force_rebaselines_and_clears_blocked(tmp_path):
     assert res.status == "ok"
     assert get_job(conn, job.name).blocked_reason is None
     assert integrity.read_marker(job) is not None
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_legacy_job_adopts_existing_destination_without_block(tmp_path):
+    job = make_job(tmp_path)  # job_id None, last_snapshot None (pre-feature job)
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    # a snapshot already exists on the destination from an older version
+    old_snap = job_dir(job) / "snapshots" / "2026-06-01_00-00-00"
+    old_snap.mkdir(parents=True)
+    (old_snap / "old.txt").write_text("old")
+    res = run_backup(job, conn=conn, now=datetime(2026, 6, 28, 2, 0, 0))
+    assert res.status == "ok"                       # adopted, not blocked
+    assert get_job(conn, job.name).job_id is not None  # id assigned + persisted
+    assert old_snap.is_dir()                        # pre-existing snapshot preserved
+    assert (old_snap / "old.txt").read_text() == "old"

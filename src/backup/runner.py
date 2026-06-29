@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -71,7 +72,6 @@ def run_backup(
 
     # Ensure the job has a stable identity (legacy jobs created before this feature)
     if job.job_id is None:
-        import uuid
         job.job_id = uuid.uuid4().hex
         if conn is not None:
             db.update_job(conn, job.name, job_id=job.job_id)
@@ -118,7 +118,10 @@ def run_backup(
     _update_latest(job, final)
     _prune(job)
 
-    integrity.write_marker(job, stamp)
+    try:
+        integrity.write_marker(job, stamp)
+    except OSError as exc:
+        _log(job, "warning: could not write integrity marker: %s" % exc)
     if conn is not None:
         db.update_job(conn, job.name, last_snapshot=stamp, blocked_reason=None)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from backup import integrity
 from backup.db import Job
 
@@ -17,7 +19,7 @@ def make_job(tmp_path, name="proj", job_id="id-1", last_snapshot=None):
 
 
 def _make_snapshot(job, stamp):
-    d = tmp = __import__("pathlib").Path(job.dest) / job.name / "snapshots" / stamp
+    d = Path(job.dest) / job.name / "snapshots" / stamp
     d.mkdir(parents=True, exist_ok=True)
 
 
