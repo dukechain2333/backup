@@ -46,6 +46,38 @@ class Job:
     last_message: Optional[str] = None
 
 
+# Columns introduced after the initial release. connect() ensures each exists,
+# so a jobs.db created by an older version is upgraded in place on open without
+# losing data. Each column MUST be nullable or carry a DEFAULT — SQLite cannot
+# ADD a NOT NULL column without a default to a populated table. Append future
+# columns here; never remove or reorder existing entries.
+_ADDED_COLUMNS = [
+    # ("jobs", "future_col", "TEXT"),
+]
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(
+        row["name"] == column
+        for row in conn.execute("PRAGMA table_info(%s)" % table)
+    )
+
+
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
+    if not _column_exists(conn, table, column):
+        conn.execute(
+            "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, definition)
+        )
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, definition in _ADDED_COLUMNS:
+        _ensure_column(conn, table, column, definition)
+    conn.commit()
+
+
 def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     if path is None:
         paths.ensure_dirs()
@@ -54,6 +86,7 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
 
 

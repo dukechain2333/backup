@@ -107,3 +107,34 @@ def test_set_config_upserts(tmp_path):
     set_config(conn, "default_dest", "/old")
     set_config(conn, "default_dest", "/new")
     assert get_config(conn, "default_dest") == "/new"
+
+
+def test_column_exists_reports_presence(tmp_path):
+    import backup.db as dbmod
+    conn = connect(tmp_path / "jobs.db")
+    assert dbmod._column_exists(conn, "jobs", "keep") is True
+    assert dbmod._column_exists(conn, "jobs", "nope") is False
+
+
+def test_ensure_column_adds_missing_and_is_idempotent(tmp_path):
+    import backup.db as dbmod
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, make_job())
+    assert dbmod._column_exists(conn, "jobs", "priority") is False
+    dbmod._ensure_column(conn, "jobs", "priority", "INTEGER")
+    assert dbmod._column_exists(conn, "jobs", "priority") is True
+    dbmod._ensure_column(conn, "jobs", "priority", "INTEGER")  # idempotent: no error
+    assert get_job(conn, "docs").source == "/a/docs"  # existing data preserved
+
+
+def test_connect_upgrades_old_db_with_added_columns(tmp_path, monkeypatch):
+    import backup.db as dbmod
+    path = tmp_path / "jobs.db"
+    conn = connect(path)              # "old" version DB
+    add_job(conn, make_job())
+    conn.close()
+    # Newer version declares an added column:
+    monkeypatch.setattr(dbmod, "_ADDED_COLUMNS", [("jobs", "notes", "TEXT")])
+    conn2 = connect(path)            # reopened by "new" code -> migrates in place
+    assert dbmod._column_exists(conn2, "jobs", "notes") is True
+    assert get_job(conn2, "docs").source == "/a/docs"  # data survived the upgrade
