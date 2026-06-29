@@ -6,11 +6,13 @@ from backup.db import (
     Job,
     add_job,
     connect,
+    get_config,
     get_job,
     get_job_by_source,
     list_jobs,
     record_run,
     remove_job,
+    set_config,
     update_job,
 )
 
@@ -86,3 +88,22 @@ def test_remove(tmp_path):
     add_job(conn, make_job())
     assert remove_job(conn, "docs") is True
     assert remove_job(conn, "docs") is False
+
+
+def test_get_config_missing_returns_default(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    assert get_config(conn, "default_dest") is None
+    assert get_config(conn, "default_dest", "/fallback") == "/fallback"
+
+
+def test_set_and_get_config(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    set_config(conn, "default_dest", "/mnt/backups")
+    assert get_config(conn, "default_dest") == "/mnt/backups"
+
+
+def test_set_config_upserts(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    set_config(conn, "default_dest", "/old")
+    set_config(conn, "default_dest", "/new")
+    assert get_config(conn, "default_dest") == "/new"

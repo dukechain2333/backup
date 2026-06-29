@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     last_status    TEXT,
     last_message   TEXT
 );
+CREATE TABLE IF NOT EXISTS config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -119,3 +123,19 @@ def record_run(
         conn, name,
         last_status=status, last_message=message, last_run_at=run_at,
     )
+
+
+def get_config(
+    conn: sqlite3.Connection, key: str, default: Optional[str] = None
+) -> Optional[str]:
+    row = conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_config(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO config (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()

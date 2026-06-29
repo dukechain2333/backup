@@ -39,7 +39,13 @@ def cmd_add(args) -> int:
     source = _resolve(args.source or os.getcwd())
     if not source.is_dir():
         return _err("source is not a directory: %s" % source)
-    dest = _resolve(args.dest)
+
+    conn = db.connect()
+    dest_arg = args.dest or db.get_config(conn, "default_dest")
+    if not dest_arg:
+        return _err("no destination: pass --dest or set one with "
+                    "'backup config --default-dest <path>'")
+    dest = _resolve(dest_arg)
     if _is_inside(dest, source) or dest == source:
         return _err("destination %s is inside source %s (would recurse)"
                     % (dest, source))
@@ -59,7 +65,6 @@ def cmd_add(args) -> int:
     if not schedule.validate_oncalendar(sched.oncalendar):
         return _err("systemd rejected schedule: %s" % sched.oncalendar)
 
-    conn = db.connect()
     if db.get_job(conn, name) is not None:
         return _err("a job named %r already exists" % name)
     existing = db.get_job_by_source(conn, str(source))
@@ -83,6 +88,19 @@ def cmd_add(args) -> int:
     return 0
 
 
+def cmd_config(args) -> int:
+    conn = db.connect()
+    if args.default_dest is not None:
+        dest = _resolve(args.default_dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        db.set_config(conn, "default_dest", str(dest))
+        print("default-dest: %s" % dest)
+        return 0
+    current = db.get_config(conn, "default_dest")
+    print("default-dest: %s" % (current if current else "(not set)"))
+    return 0
+
+
 def _require_job(conn, name: str):
     job = db.get_job(conn, name)
     if job is None:
@@ -94,7 +112,8 @@ def cmd_list(args) -> int:
     conn = db.connect()
     jobs = db.list_jobs(conn)
     if not jobs:
-        print("no backup jobs registered. add one with: backup add --dest <path>")
+        print("no backup jobs registered. run 'backup add --dest <path>', or set a "
+              "default with 'backup config --default-dest <path>' then 'backup add'.")
         return 0
     header = "%-14s %-8s %-18s %-20s %s" % (
         "NAME", "STATE", "SCHEDULE", "LAST RUN", "SOURCE -> DEST")
@@ -326,12 +345,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("add", help="register the current dir as a backup job")
     a.add_argument("--source", help="directory to back up (default: cwd)")
-    a.add_argument("--dest", required=True, help="local destination directory")
+    a.add_argument("--dest",
+                   help="local destination directory (default: configured default-dest)")
     a.add_argument("--schedule", default="daily@02:00",
                    help="hourly | daily@HH:MM | weekly@dow:HH:MM | every:Nh | every:Nm")
     a.add_argument("--keep", type=int, default=7, help="snapshots to retain")
     a.add_argument("--name", help="job name (default: source basename)")
     a.set_defaults(func=cmd_add)
+
+    c = sub.add_parser("config", help="show or set configuration")
+    c.add_argument("--default-dest", dest="default_dest",
+                   help="set the default destination used by 'add' when --dest is omitted")
+    c.set_defaults(func=cmd_config)
 
     sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)
 

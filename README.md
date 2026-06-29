@@ -25,9 +25,15 @@ timers run even when you are logged out.
 ## Usage
 
 ```bash
-# In the folder you want to back up:
+# Set a default destination once, so you don't repeat --dest:
+backup config --default-dest /mnt/backups
+backup config               # show current settings
+
+# In the folder you want to back up — source defaults to the current directory,
+# dest defaults to the configured default-dest:
 cd ~/important-project
-backup add --dest /mnt/backups --schedule daily@02:00
+backup add --schedule daily@02:00
+# (or override either: backup add --source /some/dir --dest /other/disk)
 
 backup list                 # see all jobs, state, last/next run
 backup status important-project

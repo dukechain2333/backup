@@ -169,3 +169,56 @@ def test_edit_dest_change_allowed_without_snapshots(xdg, tmp_path, monkeypatch):
     cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
     assert cli.main(["edit", "proj", "--dest", str(dst2)]) == 0
     assert dst2.is_dir()
+
+
+def test_config_sets_and_shows_default_dest(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    dst = tmp_path / "defaults"
+    assert cli.main(["config", "--default-dest", str(dst)]) == 0
+    assert dst.is_dir()
+    capsys.readouterr()
+    assert cli.main(["config"]) == 0
+    out = capsys.readouterr().out
+    assert str(dst) in out
+    conn = db.connect()
+    assert db.get_config(conn, "default_dest") == str(dst)
+
+
+def test_config_show_when_unset(xdg, tmp_path, monkeypatch, capsys):
+    assert cli.main(["config"]) == 0
+    assert "not set" in capsys.readouterr().out.lower()
+
+
+def test_add_uses_default_dest_when_dest_omitted(xdg, tmp_path, monkeypatch):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "defaults"
+    src.mkdir()
+    cli.main(["config", "--default-dest", str(dst)])
+    assert cli.main(["add", "--source", str(src), "--schedule", "hourly"]) == 0
+    conn = db.connect()
+    assert db.get_job(conn, "proj").dest == str(dst)
+
+
+def test_add_errors_when_no_dest_and_no_default(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    src.mkdir()
+    rc = cli.main(["add", "--source", str(src), "--schedule", "hourly"])
+    assert rc != 0
+    assert "destination" in capsys.readouterr().err.lower()
+
+
+def test_add_dest_overrides_default(xdg, tmp_path, monkeypatch):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    default_dst = tmp_path / "defaults"
+    explicit_dst = tmp_path / "explicit"
+    src.mkdir()
+    cli.main(["config", "--default-dest", str(default_dst)])
+    assert cli.main(["add", "--source", str(src), "--dest", str(explicit_dst),
+                     "--schedule", "hourly"]) == 0
+    conn = db.connect()
+    assert db.get_job(conn, "proj").dest == str(explicit_dst)
