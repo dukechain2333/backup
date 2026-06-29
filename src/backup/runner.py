@@ -114,6 +114,8 @@ def run_backup(
             result.returncode, result.stderr.strip())
         return _finish(job, conn, now, "failed", msg, None)
 
+    if final.is_dir():
+        shutil.rmtree(final, ignore_errors=True)
     partial.replace(final)
     _update_latest(job, final)
     _prune(job)

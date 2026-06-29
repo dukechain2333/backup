@@ -152,3 +152,18 @@ def test_legacy_job_adopts_existing_destination_without_block(tmp_path):
     assert get_job(conn, job.name).job_id is not None  # id assigned + persisted
     assert old_snap.is_dir()                        # pre-existing snapshot preserved
     assert (old_snap / "old.txt").read_text() == "old"
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_two_runs_in_same_second_do_not_crash(tmp_path):
+    job = make_job(tmp_path)
+    job.job_id = "id-1"
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    t = datetime(2026, 6, 28, 2, 0, 0)
+    r1 = run_backup(job, conn=conn, now=t)
+    assert r1.status == "ok"
+    reloaded = get_job(conn, job.name)
+    r2 = run_backup(reloaded, conn=conn, now=t)  # same timestamp
+    assert r2.status == "ok"                      # must not crash
+    assert len(list_snapshots(job)) == 1          # same-second snapshot superseded, not duplicated
