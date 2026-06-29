@@ -37,7 +37,8 @@ backup add --schedule daily@02:00
 
 backup list                 # see all jobs, state, last/next run
 backup status important-project
-backup run important-project    # snapshot now
+backup run important-project    # snapshot one job now
+backup run --all                # snapshot every job now (sequentially)
 backup pause important-project  # stop future runs
 backup resume important-project
 backup snapshots important-project

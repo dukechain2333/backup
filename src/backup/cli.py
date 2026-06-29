@@ -197,6 +197,28 @@ def cmd_resume(args) -> int:
 
 def cmd_run(args) -> int:
     conn = db.connect()
+    if args.all and args.name:
+        return _err("give a job name or --all, not both")
+    if not args.all and not args.name:
+        return _err("specify a job name or --all")
+
+    if args.all:
+        jobs = db.list_jobs(conn)
+        if not jobs:
+            print("no backup jobs registered.")
+            return 0
+        ok = 0
+        failed = 0
+        for job in jobs:
+            result = runner.run_backup(job, conn=conn)
+            print("%s: %s: %s" % (job.name, result.status, result.message))
+            if result.status == "ok":
+                ok += 1
+            else:
+                failed += 1
+        print("%d ok, %d failed" % (ok, failed))
+        return 0 if failed == 0 else 1
+
     job = _require_job(conn, args.name)
     if job is None:
         return 1
@@ -364,12 +386,16 @@ def build_parser() -> argparse.ArgumentParser:
         ("status", cmd_status, "show job detail"),
         ("pause", cmd_pause, "pause a job's timer"),
         ("resume", cmd_resume, "resume a job's timer"),
-        ("run", cmd_run, "run a backup now"),
         ("snapshots", cmd_snapshots, "list snapshots for a job"),
     ]:
         sp = sub.add_parser(cmd, help=help_)
         sp.add_argument("name")
         sp.set_defaults(func=fn)
+
+    rn = sub.add_parser("run", help="run a backup now (one job, or --all)")
+    rn.add_argument("name", nargs="?", help="job to run (omit with --all)")
+    rn.add_argument("--all", action="store_true", help="run every job")
+    rn.set_defaults(func=cmd_run)
 
     r = sub.add_parser("remove", help="delete a job")
     r.add_argument("name")

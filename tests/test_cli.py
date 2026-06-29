@@ -222,3 +222,59 @@ def test_add_dest_overrides_default(xdg, tmp_path, monkeypatch):
                      "--schedule", "hourly"]) == 0
     conn = db.connect()
     assert db.get_job(conn, "proj").dest == str(explicit_dst)
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_run_all_runs_every_job(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    dst = tmp_path / "bak"
+    dst.mkdir()
+    for nm in ("alpha", "beta"):
+        src = tmp_path / nm
+        src.mkdir()
+        (src / "f.txt").write_text(nm)
+        cli.main(["add", "--source", str(src), "--dest", str(dst),
+                  "--schedule", "hourly", "--name", nm])
+    capsys.readouterr()
+    rc = cli.main(["run", "--all"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "2 ok, 0 failed" in out
+    assert (dst / "alpha" / "snapshots").is_dir()
+    assert (dst / "beta" / "snapshots").is_dir()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_run_all_continues_past_failure_and_exits_nonzero(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    dst = tmp_path / "bak"
+    dst.mkdir()
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "f.txt").write_text("ok")
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    cli.main(["add", "--source", str(good), "--dest", str(dst),
+              "--schedule", "hourly", "--name", "good"])
+    cli.main(["add", "--source", str(bad), "--dest", str(dst),
+              "--schedule", "hourly", "--name", "bad"])
+    shutil.rmtree(bad)  # make the 'bad' job fail at run time
+    capsys.readouterr()
+    rc = cli.main(["run", "--all"])
+    out = capsys.readouterr().out
+    assert rc != 0
+    assert "1 ok, 1 failed" in out
+    assert (dst / "good" / "snapshots").is_dir()  # healthy job still ran
+
+
+def test_run_requires_name_or_all(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    rc = cli.main(["run"])
+    assert rc != 0
+    assert "--all" in capsys.readouterr().err
+
+
+def test_run_name_and_all_conflict(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    rc = cli.main(["run", "proj", "--all"])
+    assert rc != 0
