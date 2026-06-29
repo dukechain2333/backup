@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -56,8 +58,8 @@ def cmd_add(args) -> int:
     conn = db.connect()
     if db.get_job(conn, name) is not None:
         return _err("a job named %r already exists" % name)
-    if db.get_job_by_source(conn, str(source)) is not None:
-        existing = db.get_job_by_source(conn, str(source))
+    existing = db.get_job_by_source(conn, str(source))
+    if existing is not None:
         return _err("source already registered as job %r" % existing.name)
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -132,7 +134,6 @@ def cmd_remove(args) -> int:
     units.remove_units(job.name)
     db.remove_job(conn, job.name)
     if args.purge:
-        import shutil
         shutil.rmtree(runner.job_dir(job), ignore_errors=True)
         print("removed job %r and purged snapshots" % job.name)
     else:
@@ -200,7 +201,11 @@ def cmd_edit(args) -> int:
     if args.keep is not None:
         updates["keep"] = args.keep
     if args.dest:
-        updates["dest"] = str(_resolve(args.dest))
+        new_dest = _resolve(args.dest)
+        if _is_inside(new_dest, Path(job.source)) or new_dest == Path(job.source):
+            return _err("destination %s is inside source %s (would recurse)"
+                        % (new_dest, job.source))
+        updates["dest"] = str(new_dest)
     if args.rename:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.rename):
             return _err("invalid name %r" % args.rename)
@@ -213,8 +218,9 @@ def cmd_edit(args) -> int:
         updates["name"] = args.rename
     db.update_job(conn, job.name, **updates)
     updated = db.get_job(conn, new_name)
-    units.install_units(updated.name, oncalendar,
-                        paths.backup_executable(), updated.source)
+    if args.schedule or args.rename:
+        units.install_units(updated.name, oncalendar,
+                            paths.backup_executable(), updated.source)
     print("updated %r" % new_name)
     return 0
 
@@ -250,8 +256,9 @@ def cmd_restore(args) -> int:
         chosen = snaps[-1]
     target = _resolve(args.to) if args.to else (
         Path(job.source).parent / ("restore-%s" % chosen.name))
-    import subprocess
-    subprocess.run(["rsync", "-a", "%s/" % chosen, "%s/" % target], check=False)
+    result = subprocess.run(["rsync", "-a", "%s/" % chosen, "%s/" % target], check=False)
+    if result.returncode not in (0, 24):
+        return _err("rsync failed (code %d)" % result.returncode)
     print("restored %s -> %s" % (chosen.name, target))
     return 0
 
