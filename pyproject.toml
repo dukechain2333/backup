@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backup-cli"
+version = "0.1.0"
+description = "Per-directory rsync snapshot backups driven by systemd user timers"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+backup = "backup.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
