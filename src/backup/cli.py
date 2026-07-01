@@ -68,9 +68,9 @@ def cmd_add(args) -> int:
 
     if db.get_job(conn, name) is not None:
         return _err("a job named %r already exists" % name)
-    existing = db.get_job_by_source(conn, str(source))
-    if existing is not None:
-        return _err("source already registered as job %r" % existing.name)
+    for existing in db.list_jobs_by_source(conn, str(source)):
+        if existing.dest == str(dest):
+            return _err("source already registered as job %r" % existing.name)
 
     dest.mkdir(parents=True, exist_ok=True)
     job = db.Job(

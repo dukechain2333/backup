@@ -16,7 +16,7 @@ _COLUMNS = (
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     name           TEXT PRIMARY KEY,
-    source         TEXT NOT NULL UNIQUE,
+    source         TEXT NOT NULL,
     dest           TEXT NOT NULL,
     oncalendar     TEXT NOT NULL,
     schedule_human TEXT NOT NULL,
@@ -81,9 +81,48 @@ def _ensure_column(
         )
 
 
+def _legacy_source_unique(conn: sqlite3.Connection) -> bool:
+    """True if jobs.source still carries the old single-column UNIQUE."""
+    for idx in conn.execute("PRAGMA index_list(jobs)"):
+        if idx["origin"] != "u" or not idx["unique"]:
+            continue
+        cols = [r["name"] for r in conn.execute(
+            "PRAGMA index_info(%s)" % idx["name"])]
+        if cols == ["source"]:
+            return True
+    return False
+
+
+def _rebuild_jobs_without_source_unique(conn: sqlite3.Connection) -> None:
+    """Recreate `jobs` without the column-level UNIQUE on source, preserving rows."""
+    cols = ", ".join(_COLUMNS)
+    conn.execute(
+        "CREATE TABLE jobs_new ("
+        " name TEXT PRIMARY KEY, source TEXT NOT NULL, dest TEXT NOT NULL,"
+        " oncalendar TEXT NOT NULL, schedule_human TEXT NOT NULL, keep INTEGER NOT NULL,"
+        " created_at TEXT NOT NULL, last_run_at TEXT, last_status TEXT, last_message TEXT,"
+        " job_id TEXT, last_snapshot TEXT, blocked_reason TEXT)"
+    )
+    conn.execute("INSERT INTO jobs_new (%s) SELECT %s FROM jobs" % (cols, cols))
+    conn.execute("DROP TABLE jobs")
+    conn.execute("ALTER TABLE jobs_new RENAME TO jobs")
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     for table, column, definition in _ADDED_COLUMNS:
         _ensure_column(conn, table, column, definition)
+    conn.commit()
+    if _legacy_source_unique(conn):
+        conn.execute("BEGIN")
+        try:
+            _rebuild_jobs_without_source_unique(conn)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS jobs_source_dest ON jobs(source, dest)"
+    )
     conn.commit()
 
 
@@ -127,9 +166,11 @@ def get_job(conn: sqlite3.Connection, name: str) -> Optional[Job]:
     return _row_to_job(row) if row else None
 
 
-def get_job_by_source(conn: sqlite3.Connection, source: str) -> Optional[Job]:
-    row = conn.execute("SELECT * FROM jobs WHERE source = ?", (source,)).fetchone()
-    return _row_to_job(row) if row else None
+def list_jobs_by_source(conn: sqlite3.Connection, source: str) -> List[Job]:
+    rows = conn.execute(
+        "SELECT * FROM jobs WHERE source = ? ORDER BY name", (source,)
+    ).fetchall()
+    return [_row_to_job(r) for r in rows]
 
 
 def list_jobs(conn: sqlite3.Connection) -> List[Job]:
