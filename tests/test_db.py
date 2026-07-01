@@ -8,8 +8,8 @@ from backup.db import (
     connect,
     get_config,
     get_job,
-    get_job_by_source,
     list_jobs,
+    list_jobs_by_source,
     record_run,
     remove_job,
     set_config,
@@ -45,18 +45,28 @@ def test_duplicate_name_rejected(tmp_path):
         add_job(conn, make_job(source="/a/other"))
 
 
-def test_duplicate_source_rejected(tmp_path):
+def test_same_source_same_dest_rejected(tmp_path):
     conn = connect(tmp_path / "jobs.db")
-    add_job(conn, make_job())
+    add_job(conn, make_job())                      # /a/docs -> /b
     with pytest.raises(ValueError):
-        add_job(conn, make_job(name="other"))
+        add_job(conn, make_job(name="other"))      # same source, same dest /b
 
 
-def test_get_by_source(tmp_path):
+def test_same_source_different_dest_allowed(tmp_path):
     conn = connect(tmp_path / "jobs.db")
-    add_job(conn, make_job())
-    assert get_job_by_source(conn, "/a/docs").name == "docs"
-    assert get_job_by_source(conn, "/nope") is None
+    add_job(conn, make_job())                       # /a/docs -> /b
+    add_job(conn, make_job(name="other", dest="/c"))  # same source, new dest
+    assert {j.name for j in list_jobs(conn)} == {"docs", "other"}
+
+
+def test_list_jobs_by_source(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, make_job())                               # docs  /a/docs -> /b
+    add_job(conn, make_job(name="mirror", dest="/c"))       # mirror /a/docs -> /c
+    add_job(conn, make_job(name="elsewhere", source="/a/other"))
+    names = [j.name for j in list_jobs_by_source(conn, "/a/docs")]
+    assert names == ["docs", "mirror"]      # both dests, ordered by name
+    assert list_jobs_by_source(conn, "/nope") == []
 
 
 def test_list_ordered(tmp_path):
@@ -180,3 +190,35 @@ def test_old_db_upgrades_with_identity_columns(tmp_path):
     for col in ("job_id", "last_snapshot", "blocked_reason"):
         assert dbmod._column_exists(conn, "jobs", col)
     assert get_job(conn, "legacy").source == "/s"  # data survived
+
+
+def test_connect_upgrades_legacy_source_unique_db(tmp_path):
+    import sqlite3
+    path = tmp_path / "jobs.db"
+    # Build a legacy DB whose jobs.source carries a column-level UNIQUE.
+    legacy = sqlite3.connect(str(path))
+    legacy.executescript(
+        "CREATE TABLE jobs ("
+        " name TEXT PRIMARY KEY, source TEXT NOT NULL UNIQUE, dest TEXT NOT NULL,"
+        " oncalendar TEXT NOT NULL, schedule_human TEXT NOT NULL, keep INTEGER NOT NULL,"
+        " created_at TEXT NOT NULL, last_run_at TEXT, last_status TEXT, last_message TEXT,"
+        " job_id TEXT, last_snapshot TEXT, blocked_reason TEXT);"
+        "CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    )
+    legacy.execute(
+        "INSERT INTO jobs (name, source, dest, oncalendar, schedule_human, keep, created_at)"
+        " VALUES ('docs','/a/docs','/b','*-*-* 02:00:00','daily at 02:00',7,'2026-06-28T00:00:00')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    conn = connect(path)                                    # new code upgrades in place
+    assert get_job(conn, "docs").source == "/a/docs"        # data preserved
+    add_job(conn, make_job(name="mirror", dest="/c"))       # fan-out now allowed
+    assert {j.name for j in list_jobs(conn)} == {"docs", "mirror"}
+    with pytest.raises(ValueError):                         # same source+dest still rejected
+        add_job(conn, make_job(name="dup"))                 # /a/docs -> /b again
+    conn.close()
+
+    conn2 = connect(path)                                   # idempotent: second upgrade is a no-op
+    assert {j.name for j in list_jobs(conn2)} == {"docs", "mirror"}

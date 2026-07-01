@@ -36,6 +36,25 @@ def _is_inside(child: Path, parent: Path) -> bool:
         return False
 
 
+def _confirm_duplicate_source(source, dest, existing, assume_yes: bool) -> bool:
+    """Warn that `source` is already backed up elsewhere; return True to proceed."""
+    sys.stderr.write("note: %s is already backed up:\n" % source)
+    for job in existing:
+        sys.stderr.write("  - job %r -> %s\n" % (job.name, job.dest))
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        sys.stderr.write(
+            "error: source already registered; re-run with --yes to add "
+            "another destination\n")
+        return False
+    reply = input("Add another backup of this source to %s? [y/N] " % dest)
+    if reply.strip().lower() in ("y", "yes"):
+        return True
+    sys.stderr.write("aborted.\n")
+    return False
+
+
 def cmd_add(args) -> int:
     source = _resolve(args.source or os.getcwd())
     if not source.is_dir():
@@ -66,11 +85,17 @@ def cmd_add(args) -> int:
     if not schedule.validate_oncalendar(sched.oncalendar):
         return _err("systemd rejected schedule: %s" % sched.oncalendar)
 
-    if db.get_job(conn, name) is not None:
-        return _err("a job named %r already exists" % name)
-    existing = db.get_job_by_source(conn, str(source))
-    if existing is not None:
-        return _err("source already registered as job %r" % existing.name)
+    clash = db.get_job(conn, name)
+    if clash is not None:
+        hint = (" (pass --name to add another backup of the same source)"
+                if clash.source == str(source) else "")
+        return _err("a job named %r already exists%s" % (name, hint))
+    same_source = db.list_jobs_by_source(conn, str(source))
+    dup = next((j for j in same_source if j.dest == str(dest)), None)
+    if dup is not None:
+        return _err("source already backed up to %s as job %r" % (dest, dup.name))
+    if same_source and not _confirm_duplicate_source(source, dest, same_source, args.yes):
+        return 1
 
     dest.mkdir(parents=True, exist_ok=True)
     job = db.Job(
@@ -414,6 +439,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="hourly | daily@HH:MM | weekly@dow:HH:MM | every:Nh | every:Nm")
     a.add_argument("--keep", type=int, default=7, help="snapshots to retain")
     a.add_argument("--name", help="job name (default: source basename)")
+    a.add_argument("--yes", action="store_true",
+                   help="skip the confirmation when adding another destination "
+                        "for an already-backed-up source")
     a.set_defaults(func=cmd_add)
 
     c = sub.add_parser("config", help="show or set configuration")
