@@ -92,6 +92,24 @@ Preview what a run would copy (nothing is written) with
 files disappear from new snapshots; older snapshots keep them. The
 `.backupignore` files are backed up themselves unless you list them too.
 
+### Backing up one folder to several places
+
+The same folder can be registered as more than one job, each writing to its own
+destination — for example a local disk and an external drive:
+
+```
+cd ~/important-project
+backup add --dest /mnt/backups                       # first destination
+backup add --dest /media/usb --name project-usb --yes  # second destination
+```
+
+Each destination needs its own job **name** (`--name`), since the default name
+is derived from the folder. When you add a second destination for a folder that
+is already backed up, `backup` reminds you of the existing job(s) and asks for
+confirmation first; pass `--yes` to skip the prompt (required when running
+non-interactively, e.g. in a script). Backing up the *same* folder to the
+*same* destination twice is refused as a duplicate.
+
 ### Where things live
 
 - Job registry: `~/.config/backup/jobs.db`

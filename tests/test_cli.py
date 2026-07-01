@@ -47,7 +47,7 @@ def test_add_rejects_dest_inside_source(xdg, tmp_path, monkeypatch, capsys):
     assert "inside" in capsys.readouterr().err.lower()
 
 
-def test_add_rejects_duplicate_source(xdg, tmp_path, monkeypatch, capsys):
+def test_add_rejects_same_source_same_dest(xdg, tmp_path, monkeypatch, capsys):
     _silence_systemd(monkeypatch)
     src = tmp_path / "proj"
     dst = tmp_path / "bak"
@@ -57,7 +57,7 @@ def test_add_rejects_duplicate_source(xdg, tmp_path, monkeypatch, capsys):
                      "--schedule", "hourly"]) == 0
     assert cli.main(["add", "--source", str(src), "--dest", str(dst),
                      "--schedule", "hourly", "--name", "other"]) != 0
-    assert "already registered" in capsys.readouterr().err.lower()
+    assert "already backed up" in capsys.readouterr().err.lower()
 
 
 def test_list_and_remove(xdg, tmp_path, monkeypatch, capsys):
@@ -392,3 +392,80 @@ def test_preview_missing_source_errors(xdg, tmp_path, monkeypatch, capsys):
     rc = cli.main(["preview", "proj"])
     assert rc != 0
     assert "not a directory" in capsys.readouterr().err.lower()
+
+
+def test_add_fanout_same_source_new_dest_with_yes(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    d1 = tmp_path / "bak1"
+    d2 = tmp_path / "bak2"
+    src.mkdir(); d1.mkdir(); d2.mkdir()
+    assert cli.main(["add", "--source", str(src), "--dest", str(d1),
+                     "--schedule", "hourly"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["add", "--source", str(src), "--dest", str(d2),
+                   "--schedule", "hourly", "--name", "mirror", "--yes"])
+    assert rc == 0
+    assert "already backed up" in capsys.readouterr().err.lower()   # reminder shown
+    conn = db.connect()
+    assert {j.name for j in db.list_jobs(conn)} == {"proj", "mirror"}
+
+
+def test_add_duplicate_source_noninteractive_without_yes_refused(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    src = tmp_path / "proj"
+    d1 = tmp_path / "bak1"
+    d2 = tmp_path / "bak2"
+    src.mkdir(); d1.mkdir(); d2.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(d1), "--schedule", "hourly"])
+    capsys.readouterr()
+    rc = cli.main(["add", "--source", str(src), "--dest", str(d2),
+                   "--schedule", "hourly", "--name", "mirror"])
+    assert rc != 0
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_add_duplicate_source_tty_confirm_yes(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    src = tmp_path / "proj"
+    d1 = tmp_path / "bak1"
+    d2 = tmp_path / "bak2"
+    src.mkdir(); d1.mkdir(); d2.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(d1), "--schedule", "hourly"])
+    rc = cli.main(["add", "--source", str(src), "--dest", str(d2),
+                   "--schedule", "hourly", "--name", "mirror"])
+    assert rc == 0
+
+
+def test_add_duplicate_source_tty_decline(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    src = tmp_path / "proj"
+    d1 = tmp_path / "bak1"
+    d2 = tmp_path / "bak2"
+    src.mkdir(); d1.mkdir(); d2.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(d1), "--schedule", "hourly"])
+    rc = cli.main(["add", "--source", str(src), "--dest", str(d2),
+                   "--schedule", "hourly", "--name", "mirror"])
+    assert rc != 0
+    conn = db.connect()
+    assert {j.name for j in db.list_jobs(conn)} == {"proj"}   # second job not created
+
+
+def test_add_same_source_no_name_hints_name_flag(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    d1 = tmp_path / "bak1"
+    src.mkdir(); d1.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(d1), "--schedule", "hourly"])
+    capsys.readouterr()
+    rc = cli.main(["add", "--source", str(src), "--dest", str(tmp_path / "bak2"),
+                   "--schedule", "hourly"])   # no --name -> name 'proj' collides
+    assert rc != 0
+    assert "--name" in capsys.readouterr().err
