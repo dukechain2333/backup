@@ -51,7 +51,7 @@ def _confirm_duplicate_source(source, dest, existing, assume_yes: bool) -> bool:
     reply = input("Add another backup of this source to %s? [y/N] " % dest)
     if reply.strip().lower() in ("y", "yes"):
         return True
-    print("aborted.")
+    sys.stderr.write("aborted.\n")
     return False
 
 

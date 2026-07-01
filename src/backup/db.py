@@ -13,8 +13,12 @@ _COLUMNS = (
     "job_id", "last_snapshot", "blocked_reason",
 )
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
+# Single source of truth for the jobs table column definitions. Used both to
+# create a fresh table (_SCHEMA) and to rebuild it during migration
+# (_rebuild_jobs_without_source_unique), so the two can never drift apart when a
+# column is added. NOTE: `source` intentionally has no UNIQUE — a source may be
+# backed up to several destinations; uniqueness is enforced on (source, dest).
+_JOBS_TABLE_BODY = """
     name           TEXT PRIMARY KEY,
     source         TEXT NOT NULL,
     dest           TEXT NOT NULL,
@@ -28,12 +32,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     job_id         TEXT,
     last_snapshot  TEXT,
     blocked_reason TEXT
-);
+"""
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (%s);
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-"""
+""" % _JOBS_TABLE_BODY
 
 
 @dataclass
@@ -96,13 +103,7 @@ def _legacy_source_unique(conn: sqlite3.Connection) -> bool:
 def _rebuild_jobs_without_source_unique(conn: sqlite3.Connection) -> None:
     """Recreate `jobs` without the column-level UNIQUE on source, preserving rows."""
     cols = ", ".join(_COLUMNS)
-    conn.execute(
-        "CREATE TABLE jobs_new ("
-        " name TEXT PRIMARY KEY, source TEXT NOT NULL, dest TEXT NOT NULL,"
-        " oncalendar TEXT NOT NULL, schedule_human TEXT NOT NULL, keep INTEGER NOT NULL,"
-        " created_at TEXT NOT NULL, last_run_at TEXT, last_status TEXT, last_message TEXT,"
-        " job_id TEXT, last_snapshot TEXT, blocked_reason TEXT)"
-    )
+    conn.execute("CREATE TABLE jobs_new (%s)" % _JOBS_TABLE_BODY)
     conn.execute("INSERT INTO jobs_new (%s) SELECT %s FROM jobs" % (cols, cols))
     conn.execute("DROP TABLE jobs")
     conn.execute("ALTER TABLE jobs_new RENAME TO jobs")
