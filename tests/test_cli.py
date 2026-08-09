@@ -206,12 +206,67 @@ def test_config_sets_and_shows_default_dest(xdg, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert str(dst) in out
     conn = db.connect()
-    assert db.get_config(conn, "default_dest") == str(dst)
+    assert db.get_default_dests(conn) == [str(dst)]
 
 
 def test_config_show_when_unset(xdg, tmp_path, monkeypatch, capsys):
     assert cli.main(["config"]) == 0
     assert "not set" in capsys.readouterr().out.lower()
+
+
+def test_config_add_appends_default_dests(xdg, tmp_path, capsys):
+    import backup.db as db
+    a, b = tmp_path / "nas", tmp_path / "usb"
+    assert cli.main(["config", "--add-default-dest", str(a)]) == 0
+    assert cli.main(["config", "--add-default-dest", str(b)]) == 0
+    assert a.is_dir() and b.is_dir()
+    conn = db.connect()
+    assert db.get_default_dests(conn) == [str(a), str(b)]
+    assert "%s, %s" % (a, b) in capsys.readouterr().out
+
+
+def test_config_add_is_idempotent(xdg, tmp_path, capsys):
+    import backup.db as db
+    a = tmp_path / "nas"
+    assert cli.main(["config", "--add-default-dest", str(a)]) == 0
+    assert cli.main(["config", "--add-default-dest", str(a)]) == 0
+    conn = db.connect()
+    assert db.get_default_dests(conn) == [str(a)]
+    assert "already" in capsys.readouterr().err.lower()
+
+
+def test_config_remove_default_dest(xdg, tmp_path, capsys):
+    import backup.db as db
+    a, b = tmp_path / "nas", tmp_path / "usb"
+    cli.main(["config", "--add-default-dest", str(a)])
+    cli.main(["config", "--add-default-dest", str(b)])
+    assert cli.main(["config", "--remove-default-dest", str(a)]) == 0
+    conn = db.connect()
+    assert db.get_default_dests(conn) == [str(b)]
+    assert a.is_dir()  # the directory itself is not deleted
+
+
+def test_config_remove_unknown_dest_errors(xdg, tmp_path, capsys):
+    rc = cli.main(["config", "--remove-default-dest", str(tmp_path / "nope")])
+    assert rc != 0
+    assert "not a default destination" in capsys.readouterr().err
+
+
+def test_config_default_dest_replaces_list(xdg, tmp_path, capsys):
+    import backup.db as db
+    a, b, c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    cli.main(["config", "--add-default-dest", str(a)])
+    cli.main(["config", "--add-default-dest", str(b)])
+    assert cli.main(["config", "--default-dest", str(c)]) == 0
+    conn = db.connect()
+    assert db.get_default_dests(conn) == [str(c)]
+
+
+def test_config_add_and_remove_conflict(xdg, tmp_path):
+    import pytest
+    with pytest.raises(SystemExit):
+        cli.main(["config", "--add-default-dest", str(tmp_path / "a"),
+                  "--remove-default-dest", str(tmp_path / "b")])
 
 
 def test_add_uses_default_dest_when_dest_omitted(xdg, tmp_path, monkeypatch):
