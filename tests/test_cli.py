@@ -524,3 +524,108 @@ def test_add_same_source_no_name_hints_name_flag(xdg, tmp_path, monkeypatch, cap
                    "--schedule", "hourly"])   # no --name -> name 'proj' collides
     assert rc != 0
     assert "--name" in capsys.readouterr().err
+
+
+def _add_defaults(*dests):
+    for d in dests:
+        assert cli.main(["config", "--add-default-dest", str(d)]) == 0
+
+
+def test_add_fans_out_to_all_default_dests(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    src.mkdir()
+    nas, usb = tmp_path / "nas", tmp_path / "usb"
+    _add_defaults(nas, usb)
+    assert cli.main(["add", "--source", str(src), "--schedule", "hourly"]) == 0
+    conn = db.connect()
+    jobs = db.list_jobs_by_source(conn, str(src))
+    assert {(j.name, j.dest) for j in jobs} == {
+        ("proj-nas", str(nas)), ("proj-usb", str(usb))}
+    for name in ("proj-nas", "proj-usb"):
+        svc, timer = units.unit_paths(name)
+        assert svc.exists() and timer.exists()
+    out = capsys.readouterr().out
+    assert out.count("added job") == 2
+
+
+def test_add_fanout_suffixes_colliding_dest_names(xdg, tmp_path, monkeypatch):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    src.mkdir()
+    a, b = tmp_path / "disk1" / "bk", tmp_path / "disk2" / "bk"
+    _add_defaults(a, b)
+    assert cli.main(["add", "--source", str(src), "--schedule", "hourly"]) == 0
+    conn = db.connect()
+    names = sorted(j.name for j in db.list_jobs_by_source(conn, str(src)))
+    assert names == ["proj-bk", "proj-bk-2"]
+
+
+def test_add_fanout_skips_existing_pair(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    src.mkdir()
+    nas, usb = tmp_path / "nas", tmp_path / "usb"
+    _add_defaults(nas)
+    assert cli.main(["add", "--source", str(src), "--schedule", "hourly"]) == 0
+    _add_defaults(usb)
+    capsys.readouterr()
+    assert cli.main(["add", "--source", str(src), "--schedule", "hourly",
+                     "--yes"]) == 0
+    err = capsys.readouterr().err
+    assert "skipping" in err and str(nas) in err
+    conn = db.connect()
+    dests = {j.dest for j in db.list_jobs_by_source(conn, str(src))}
+    assert dests == {str(nas), str(usb)}
+
+
+def test_add_fanout_all_existing_errors(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    src.mkdir()
+    nas, usb = tmp_path / "nas", tmp_path / "usb"
+    _add_defaults(nas, usb)
+    assert cli.main(["add", "--source", str(src), "--schedule", "hourly"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["add", "--source", str(src), "--schedule", "hourly", "--yes"])
+    assert rc != 0
+    assert "all default destinations" in capsys.readouterr().err
+
+
+def test_add_fanout_aborts_if_any_dest_inside_source(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    src.mkdir()
+    _add_defaults(tmp_path / "ok", src / "inside")
+    rc = cli.main(["add", "--source", str(src), "--schedule", "hourly"])
+    assert rc != 0
+    assert "inside" in capsys.readouterr().err.lower()
+    conn = db.connect()
+    assert db.list_jobs(conn) == []  # atomic: nothing created
+
+
+def test_add_fanout_continues_past_install_failure(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    calls = []
+
+    def flaky(name, oncalendar, exe, source):
+        calls.append(name)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(units, "install_units", flaky)
+    monkeypatch.setattr(units, "is_active", lambda name: True)
+    monkeypatch.setattr(units, "next_run", lambda name: None)
+    src = tmp_path / "proj"
+    src.mkdir()
+    nas, usb = tmp_path / "nas", tmp_path / "usb"
+    _add_defaults(nas, usb)
+    rc = cli.main(["add", "--source", str(src), "--schedule", "hourly"])
+    assert rc == 1
+    conn = db.connect()
+    jobs = db.list_jobs_by_source(conn, str(src))
+    assert [(j.name, j.dest) for j in jobs] == [("proj-usb", str(usb))]

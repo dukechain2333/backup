@@ -48,11 +48,26 @@ def _confirm_duplicate_source(source, dest, existing, assume_yes: bool) -> bool:
             "error: source already registered; re-run with --yes to add "
             "another destination\n")
         return False
-    reply = input("Add another backup of this source to %s? [y/N] " % dest)
+    reply = input("Add backup(s) of this source to %s? [y/N] " % dest)
     if reply.strip().lower() in ("y", "yes"):
         return True
     sys.stderr.write("aborted.\n")
     return False
+
+
+def _fanout_names(conn, base: str, dests: List[Path]) -> List[str]:
+    """One unique job name per destination: <base>-<dest slug>, then -2, -3…"""
+    names: List[str] = []
+    taken = set()
+    for dest in dests:
+        stem = "%s-%s" % (base, slugify(dest.name))
+        name, i = stem, 1
+        while name in taken or db.get_job(conn, name) is not None:
+            i += 1
+            name = "%s-%d" % (stem, i)
+        taken.add(name)
+        names.append(name)
+    return names
 
 
 def cmd_add(args) -> int:
@@ -61,19 +76,23 @@ def cmd_add(args) -> int:
         return _err("source is not a directory: %s" % source)
 
     conn = db.connect()
-    defaults = db.get_default_dests(conn)
-    dest_arg = args.dest or (defaults[0] if len(defaults) == 1 else None)
-    if not dest_arg:
-        return _err("no destination: pass --dest or set one with "
-                    "'backup config --default-dest <path>'")
-    dest = _resolve(dest_arg)
-    if _is_inside(dest, source) or dest == source:
-        return _err("destination %s is inside source %s (would recurse)"
-                    % (dest, source))
+    if args.dest:
+        dests = [_resolve(args.dest)]
+    else:
+        dests = [_resolve(d) for d in db.get_default_dests(conn)]
+        if not dests:
+            return _err("no destination: pass --dest or set one with "
+                        "'backup config --default-dest <path>' (or several "
+                        "with 'backup config --add-default-dest <path>')")
+    for dest in dests:
+        if _is_inside(dest, source) or dest == source:
+            return _err("destination %s is inside source %s (would recurse)"
+                        % (dest, source))
+    fanout = len(dests) > 1
 
-    name = args.name or slugify(source.name)
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
-        return _err("invalid name %r (use lowercase letters, digits, hyphens)" % name)
+    base = args.name or slugify(source.name)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", base):
+        return _err("invalid name %r (use lowercase letters, digits, hyphens)" % base)
     if args.keep < 1:
         return _err("--keep must be at least 1")
     if any(ord(c) < 32 for c in str(source)):
@@ -86,34 +105,58 @@ def cmd_add(args) -> int:
     if not schedule.validate_oncalendar(sched.oncalendar):
         return _err("systemd rejected schedule: %s" % sched.oncalendar)
 
-    clash = db.get_job(conn, name)
-    if clash is not None:
-        hint = (" (pass --name to add another backup of the same source)"
-                if clash.source == str(source) else "")
-        return _err("a job named %r already exists%s" % (name, hint))
     same_source = db.list_jobs_by_source(conn, str(source))
-    dup = next((j for j in same_source if j.dest == str(dest)), None)
-    if dup is not None:
-        return _err("source already backed up to %s as job %r" % (dest, dup.name))
-    if same_source and not _confirm_duplicate_source(source, dest, same_source, args.yes):
-        return 1
+    pending: List[Path] = []
+    for dest in dests:
+        dup = next((j for j in same_source if j.dest == str(dest)), None)
+        if dup is None:
+            pending.append(dest)
+        elif fanout:
+            sys.stderr.write("note: skipping %s: already backed up as job %r\n"
+                             % (dest, dup.name))
+        else:
+            return _err("source already backed up to %s as job %r"
+                        % (dest, dup.name))
+    if not pending:
+        return _err("source already backed up to all default destinations")
 
-    dest.mkdir(parents=True, exist_ok=True)
-    job = db.Job(
-        name=name, source=str(source), dest=str(dest),
-        oncalendar=sched.oncalendar, schedule_human=sched.human,
-        keep=args.keep, created_at=datetime.now().isoformat(timespec="seconds"),
-        job_id=uuid.uuid4().hex,
-    )
-    db.add_job(conn, job)
-    try:
-        units.install_units(name, sched.oncalendar, paths.backup_executable(), str(source))
-    except RuntimeError as exc:
-        db.remove_job(conn, name)
-        return _err("failed to install timer: %s" % exc)
-    print("added job %r: %s -> %s (%s, keep %d)"
-          % (name, source, dest, sched.human, args.keep))
-    return 0
+    if fanout:
+        names = _fanout_names(conn, base, pending)
+    else:
+        clash = db.get_job(conn, base)
+        if clash is not None:
+            hint = (" (pass --name to add another backup of the same source)"
+                    if clash.source == str(source) else "")
+            return _err("a job named %r already exists%s" % (base, hint))
+        names = [base]
+
+    if same_source:
+        shown = ", ".join(str(d) for d in pending)
+        if not _confirm_duplicate_source(source, shown, same_source, args.yes):
+            return 1
+
+    failures = 0
+    for name, dest in zip(names, pending):
+        dest.mkdir(parents=True, exist_ok=True)
+        job = db.Job(
+            name=name, source=str(source), dest=str(dest),
+            oncalendar=sched.oncalendar, schedule_human=sched.human,
+            keep=args.keep, created_at=datetime.now().isoformat(timespec="seconds"),
+            job_id=uuid.uuid4().hex,
+        )
+        db.add_job(conn, job)
+        try:
+            units.install_units(name, sched.oncalendar,
+                                paths.backup_executable(), str(source))
+        except RuntimeError as exc:
+            db.remove_job(conn, name)
+            sys.stderr.write("error: failed to install timer for %r: %s\n"
+                             % (name, exc))
+            failures += 1
+            continue
+        print("added job %r: %s -> %s (%s, keep %d)"
+              % (name, source, dest, sched.human, args.keep))
+    return 1 if failures else 0
 
 
 def cmd_config(args) -> int:
