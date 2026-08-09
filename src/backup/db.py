@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -225,3 +226,25 @@ def set_config(conn: sqlite3.Connection, key: str, value: str) -> None:
         (key, value),
     )
     conn.commit()
+
+
+def get_default_dests(conn: sqlite3.Connection) -> List[str]:
+    """Default destinations, in insertion order.
+
+    The value is a JSON array; a bare path written by an older version is
+    read as a one-element list (rewritten as JSON on the next set).
+    """
+    raw = get_config(conn, "default_dest")
+    if raw is None:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return [raw]
+    if isinstance(parsed, list):
+        return [str(p) for p in parsed]
+    return [raw]
+
+
+def set_default_dests(conn: sqlite3.Connection, dests: List[str]) -> None:
+    set_config(conn, "default_dest", json.dumps(dests))

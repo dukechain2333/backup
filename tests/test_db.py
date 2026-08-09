@@ -7,12 +7,14 @@ from backup.db import (
     add_job,
     connect,
     get_config,
+    get_default_dests,
     get_job,
     list_jobs,
     list_jobs_by_source,
     record_run,
     remove_job,
     set_config,
+    set_default_dests,
     update_job,
 )
 
@@ -222,3 +224,28 @@ def test_connect_upgrades_legacy_source_unique_db(tmp_path):
 
     conn2 = connect(path)                                   # idempotent: second upgrade is a no-op
     assert {j.name for j in list_jobs(conn2)} == {"docs", "mirror"}
+
+
+def test_get_default_dests_missing_returns_empty(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    assert get_default_dests(conn) == []
+
+
+def test_set_and_get_default_dests_round_trip(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    set_default_dests(conn, ["/mnt/nas", "/mnt/usb"])
+    assert get_default_dests(conn) == ["/mnt/nas", "/mnt/usb"]
+
+
+def test_get_default_dests_reads_legacy_plain_path(tmp_path):
+    # A db written before the JSON-list format stores a bare path string.
+    conn = connect(tmp_path / "jobs.db")
+    set_config(conn, "default_dest", "/mnt/backups")
+    assert get_default_dests(conn) == ["/mnt/backups"]
+
+
+def test_set_default_dests_overwrites(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    set_default_dests(conn, ["/a"])
+    set_default_dests(conn, ["/b", "/c"])
+    assert get_default_dests(conn) == ["/b", "/c"]

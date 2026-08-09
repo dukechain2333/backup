@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import sys
+from pathlib import Path
+
+# Ensure this worktree's src directory is first in the path
+_worktree_src = Path(__file__).parent.parent / "src"
+sys.path.insert(0, str(_worktree_src))
+
 import pytest
 
 
