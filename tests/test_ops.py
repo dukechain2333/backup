@@ -123,6 +123,7 @@ def test_prune_forgets_pruned_rows(tmp_path):
     add_job(conn, job)
     base = datetime(2026, 8, 9, 0, 0, 0)
     for i in range(4):
+        (Path(job.source) / "a.txt").write_text("v" * (i + 1))
         run_backup(job, conn=conn, now=base + timedelta(hours=i))
     names = list_snapshot_names(conn, "docs")
     assert len(names) == 2
@@ -149,6 +150,7 @@ def test_prune_keeps_row_when_delete_fails(tmp_path, monkeypatch):
     job = make_job(tmp_path, keep=1)
     add_job(conn, job)
     run_backup(job, conn=conn, now=datetime(2026, 8, 9, 0, 0, 0))
+    (Path(job.source) / "a.txt").write_text("edited")
     # second run prunes the first, but deletion fails (e.g. read-only dest)
     real_rmtree = runner_mod.shutil.rmtree
     monkeypatch.setattr(runner_mod.shutil, "rmtree",

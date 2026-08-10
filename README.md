@@ -104,6 +104,12 @@ the snapshot directory manually first.
 
 ### Safety guards
 
+- **Skip when unchanged** — a run that finds nothing changed since the newest
+  snapshot (checked with an rsync dry-run, `.backupignore` applied) records
+  the run as `unchanged` and rotates nothing, so identical copies never push
+  your last *meaningful* snapshot out of the retention window. The retention
+  count therefore keeps the last N *distinct* states, not the last N days.
+  `backup run <name> --force` still takes a snapshot unconditionally.
 - **Shrink guard** — if a new snapshot would contain no files (or under 10% of
   the previous snapshot's files, for trees of 20+ files), the run is refused
   and the job marked blocked instead of rotating good snapshots away. This

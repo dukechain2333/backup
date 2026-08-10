@@ -39,6 +39,7 @@ def test_snapshot_copies_files(tmp_path):
 def test_unchanged_files_are_hardlinked(tmp_path):
     job = make_job(tmp_path)
     run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    (Path(job.source) / "b.txt").write_text("new")  # a.txt stays untouched
     run_backup(job, now=datetime(2026, 6, 28, 3, 0, 0))
     snaps = list_snapshots(job)
     assert len(snaps) == 2
@@ -52,6 +53,9 @@ def test_retention_prunes_oldest(tmp_path):
     job = make_job(tmp_path, keep=2)
     base = datetime(2026, 6, 28, 0, 0, 0)
     for i in range(4):
+        # distinct sizes: rsync's quick-check (size + whole-second mtime)
+        # cannot see same-second same-size edits, with or without this feature
+        (Path(job.source) / "a.txt").write_text("v" * (i + 1))
         run_backup(job, now=base + timedelta(hours=i))
     snaps = list_snapshots(job)
     assert len(snaps) == 2  # only newest 2 kept
@@ -68,8 +72,10 @@ def test_missing_dest_fails(tmp_path):
 def test_latest_points_to_newest_after_multiple_runs(tmp_path):
     job = make_job(tmp_path)
     run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    (Path(job.source) / "a.txt").write_text("v2")
     run_backup(job, now=datetime(2026, 6, 28, 3, 0, 0))
     snaps = list_snapshots(job)
+    assert len(snaps) == 2
     assert (job_dir(job) / "latest").resolve() == snaps[-1].resolve()
 
 
@@ -164,6 +170,7 @@ def test_two_runs_in_same_second_do_not_crash(tmp_path):
     t = datetime(2026, 6, 28, 2, 0, 0)
     r1 = run_backup(job, conn=conn, now=t)
     assert r1.status == "ok"
+    (Path(job.source) / "a.txt").write_text("changed")
     reloaded = get_job(conn, job.name)
     r2 = run_backup(reloaded, conn=conn, now=t)  # same timestamp
     assert r2.status == "ok"                      # must not crash
@@ -221,3 +228,56 @@ def test_preview_includes_symlinks(tmp_path):
     files = preview_backup(job)
     assert "real.txt" in files
     assert "alink.txt" in files  # archive mode preserves symlinks; preview must show them
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_unchanged_source_skips_snapshot(tmp_path):
+    job = make_job(tmp_path)
+    job.job_id = "id-1"
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, job)
+    run_backup(job, conn=conn, now=datetime(2026, 6, 28, 2, 0, 0))
+    reloaded = get_job(conn, job.name)
+    res = run_backup(reloaded, conn=conn, now=datetime(2026, 6, 29, 2, 0, 0))
+    assert res.status == "unchanged"
+    assert res.snapshot is None
+    assert len(list_snapshots(job)) == 1  # nothing rotated in
+    after = get_job(conn, job.name)
+    assert after.last_snapshot == "2026-06-28_02-00-00"  # untouched
+    assert after.last_status == "unchanged"              # run still recorded
+    assert after.last_run_at == "2026-06-29T02:00:00"
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_change_after_skipped_run_creates_snapshot(tmp_path):
+    job = make_job(tmp_path)
+    run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    run_backup(job, now=datetime(2026, 6, 29, 2, 0, 0))  # unchanged, skipped
+    (Path(job.source) / "a.txt").write_text("edited")
+    res = run_backup(job, now=datetime(2026, 6, 30, 2, 0, 0))
+    assert res.status == "ok"
+    snaps = list_snapshots(job)
+    assert len(snaps) == 2
+    assert (snaps[-1] / "a.txt").read_text() == "edited"
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_deletion_counts_as_change(tmp_path):
+    job = make_job(tmp_path)
+    (Path(job.source) / "b.txt").write_text("second")
+    run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    (Path(job.source) / "b.txt").unlink()
+    res = run_backup(job, now=datetime(2026, 6, 29, 2, 0, 0))
+    assert res.status == "ok"
+    snaps = list_snapshots(job)
+    assert len(snaps) == 2
+    assert not (snaps[-1] / "b.txt").exists()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_force_snapshots_even_when_unchanged(tmp_path):
+    job = make_job(tmp_path)
+    run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    res = run_backup(job, now=datetime(2026, 6, 29, 2, 0, 0), force=True)
+    assert res.status == "ok"
+    assert len(list_snapshots(job)) == 2

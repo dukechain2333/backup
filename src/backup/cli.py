@@ -329,6 +329,7 @@ def cmd_run(args) -> int:
         ok = 0
         failed = 0
         skipped = 0
+        unchanged = 0
         for job in jobs:
             if job.archived_at:
                 print("%s: skipped (archived)" % job.name)
@@ -338,9 +339,13 @@ def cmd_run(args) -> int:
             print("%s: %s: %s" % (job.name, result.status, result.message))
             if result.status == "ok":
                 ok += 1
+            elif result.status == "unchanged":
+                unchanged += 1
             else:
                 failed += 1
         summary = "%d ok, %d failed" % (ok, failed)
+        if unchanged:
+            summary += ", %d unchanged" % unchanged
         if skipped:
             summary += ", %d skipped (archived)" % skipped
         print(summary)
@@ -351,7 +356,7 @@ def cmd_run(args) -> int:
         return 1
     result = runner.run_backup(job, conn=conn, force=args.force)
     print("%s: %s" % (result.status, result.message))
-    return 0 if result.status == "ok" else 1
+    return 0 if result.status in ("ok", "unchanged") else 1
 
 
 def cmd_logs(args) -> int:
@@ -375,7 +380,7 @@ def cmd_internal_run(args) -> int:
     if job is None:
         return _err("no job named %r" % args.name)
     result = runner.run_backup(job, conn=conn)
-    return 0 if result.status == "ok" else 1
+    return 0 if result.status in ("ok", "unchanged") else 1
 
 
 def cmd_edit(args) -> int:

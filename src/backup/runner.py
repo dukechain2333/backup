@@ -88,6 +88,22 @@ def _prune(job: db.Job, conn=None) -> None:
             db.forget_snapshot(conn, job.name, old.name)
 
 
+def _source_unchanged(job: db.Job, prev: Path) -> bool:
+    """True only when a dry-run rsync against the newest snapshot itemizes
+    nothing to transfer or delete. Any output, or any dry-run error, counts
+    as changed: a false 'changed' costs one redundant hard-linked snapshot,
+    a false 'unchanged' would silently skip a real backup."""
+    cmd = ["rsync", "-a", "-n", "-i", "--delete", *IGNORE_FILTER,
+           "%s/" % job.source, "%s/" % prev]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError:
+        return False
+    if result.returncode not in _RSYNC_OK:
+        return False
+    return not result.stdout.strip()
+
+
 def run_backup(
     job: db.Job, conn=None, now: Optional[datetime] = None, force: bool = False
 ) -> RunResult:
@@ -140,6 +156,11 @@ def run_backup(
         shutil.rmtree(partial, ignore_errors=True)
 
     previous = list_snapshots(job)
+    if previous and not force and _source_unchanged(job, previous[-1]):
+        return _finish(
+            job, conn, now, "unchanged",
+            "no changes since %s; snapshot skipped" % previous[-1].name, None)
+
     cmd = ["rsync", "-a", "--delete", *IGNORE_FILTER]
     if previous:
         cmd.append("--link-dest=%s" % previous[-1])
