@@ -106,6 +106,15 @@ def cmd_add(args) -> int:
         return _err("systemd rejected schedule: %s" % sched.oncalendar)
 
     same_source = db.list_jobs_by_source(conn, str(source))
+
+    if not fanout:
+        # Single-dest case: check name clash first (preserve old error message order)
+        clash = db.get_job(conn, base)
+        if clash is not None:
+            hint = (" (pass --name to add another backup of the same source)"
+                    if clash.source == str(source) else "")
+            return _err("a job named %r already exists%s" % (base, hint))
+
     pending: List[Path] = []
     for dest in dests:
         dup = next((j for j in same_source if j.dest == str(dest)), None)
@@ -123,11 +132,6 @@ def cmd_add(args) -> int:
     if fanout:
         names = _fanout_names(conn, base, pending)
     else:
-        clash = db.get_job(conn, base)
-        if clash is not None:
-            hint = (" (pass --name to add another backup of the same source)"
-                    if clash.source == str(source) else "")
-            return _err("a job named %r already exists%s" % (base, hint))
         names = [base]
 
     if same_source:

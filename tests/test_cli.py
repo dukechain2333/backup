@@ -629,3 +629,21 @@ def test_add_fanout_continues_past_install_failure(xdg, tmp_path, monkeypatch, c
     conn = db.connect()
     jobs = db.list_jobs_by_source(conn, str(src))
     assert [(j.name, j.dest) for j in jobs] == [("proj-usb", str(usb))]
+
+
+def test_add_repeat_same_command_keeps_name_clash_message(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    # First add succeeds
+    assert cli.main(["add", "--source", str(src), "--dest", str(dst),
+                     "--schedule", "hourly"]) == 0
+    capsys.readouterr()
+    # Repeat exact same command without --name should error with name-clash message (not dup-by-dest)
+    rc = cli.main(["add", "--source", str(src), "--dest", str(dst),
+                   "--schedule", "hourly"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "already exists" in err and "pass --name" in err
