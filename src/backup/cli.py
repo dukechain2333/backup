@@ -48,11 +48,26 @@ def _confirm_duplicate_source(source, dest, existing, assume_yes: bool) -> bool:
             "error: source already registered; re-run with --yes to add "
             "another destination\n")
         return False
-    reply = input("Add another backup of this source to %s? [y/N] " % dest)
+    reply = input("Add backup(s) of this source to %s? [y/N] " % dest)
     if reply.strip().lower() in ("y", "yes"):
         return True
     sys.stderr.write("aborted.\n")
     return False
+
+
+def _fanout_names(conn, base: str, dests: List[Path]) -> List[str]:
+    """One unique job name per destination: <base>-<dest slug>, then -2, -3…"""
+    names: List[str] = []
+    taken = set()
+    for dest in dests:
+        stem = "%s-%s" % (base, slugify(dest.name))
+        name, i = stem, 1
+        while name in taken or db.get_job(conn, name) is not None:
+            i += 1
+            name = "%s-%d" % (stem, i)
+        taken.add(name)
+        names.append(name)
+    return names
 
 
 def cmd_add(args) -> int:
@@ -61,18 +76,27 @@ def cmd_add(args) -> int:
         return _err("source is not a directory: %s" % source)
 
     conn = db.connect()
-    dest_arg = args.dest or db.get_config(conn, "default_dest")
-    if not dest_arg:
-        return _err("no destination: pass --dest or set one with "
-                    "'backup config --default-dest <path>'")
-    dest = _resolve(dest_arg)
-    if _is_inside(dest, source) or dest == source:
-        return _err("destination %s is inside source %s (would recurse)"
-                    % (dest, source))
+    if args.dest:
+        dests = [_resolve(args.dest)]
+    else:
+        dests = []
+        for d in db.get_default_dests(conn):
+            resolved = _resolve(d)
+            if resolved not in dests:
+                dests.append(resolved)
+        if not dests:
+            return _err("no destination: pass --dest or set one with "
+                        "'backup config --default-dest <path>' (or several "
+                        "with 'backup config --add-default-dest <path>')")
+    for dest in dests:
+        if _is_inside(dest, source) or dest == source:
+            return _err("destination %s is inside source %s (would recurse)"
+                        % (dest, source))
+    fanout = len(dests) > 1
 
-    name = args.name or slugify(source.name)
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
-        return _err("invalid name %r (use lowercase letters, digits, hyphens)" % name)
+    base = args.name or slugify(source.name)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", base):
+        return _err("invalid name %r (use lowercase letters, digits, hyphens)" % base)
     if args.keep < 1:
         return _err("--keep must be at least 1")
     if any(ord(c) < 32 for c in str(source)):
@@ -85,34 +109,62 @@ def cmd_add(args) -> int:
     if not schedule.validate_oncalendar(sched.oncalendar):
         return _err("systemd rejected schedule: %s" % sched.oncalendar)
 
-    clash = db.get_job(conn, name)
-    if clash is not None:
-        hint = (" (pass --name to add another backup of the same source)"
-                if clash.source == str(source) else "")
-        return _err("a job named %r already exists%s" % (name, hint))
     same_source = db.list_jobs_by_source(conn, str(source))
-    dup = next((j for j in same_source if j.dest == str(dest)), None)
-    if dup is not None:
-        return _err("source already backed up to %s as job %r" % (dest, dup.name))
-    if same_source and not _confirm_duplicate_source(source, dest, same_source, args.yes):
-        return 1
 
-    dest.mkdir(parents=True, exist_ok=True)
-    job = db.Job(
-        name=name, source=str(source), dest=str(dest),
-        oncalendar=sched.oncalendar, schedule_human=sched.human,
-        keep=args.keep, created_at=datetime.now().isoformat(timespec="seconds"),
-        job_id=uuid.uuid4().hex,
-    )
-    db.add_job(conn, job)
-    try:
-        units.install_units(name, sched.oncalendar, paths.backup_executable(), str(source))
-    except RuntimeError as exc:
-        db.remove_job(conn, name)
-        return _err("failed to install timer: %s" % exc)
-    print("added job %r: %s -> %s (%s, keep %d)"
-          % (name, source, dest, sched.human, args.keep))
-    return 0
+    if not fanout:
+        # Single-dest case: check name clash first (preserve old error message order)
+        clash = db.get_job(conn, base)
+        if clash is not None:
+            hint = (" (pass --name to add another backup of the same source)"
+                    if clash.source == str(source) else "")
+            return _err("a job named %r already exists%s" % (base, hint))
+
+    pending: List[Path] = []
+    for dest in dests:
+        dup = next((j for j in same_source if j.dest == str(dest)), None)
+        if dup is None:
+            pending.append(dest)
+        elif fanout:
+            sys.stderr.write("note: skipping %s: already backed up as job %r\n"
+                             % (dest, dup.name))
+        else:
+            return _err("source already backed up to %s as job %r"
+                        % (dest, dup.name))
+    if not pending:
+        return _err("source already backed up to all default destinations")
+
+    if fanout:
+        names = _fanout_names(conn, base, pending)
+    else:
+        names = [base]
+
+    if same_source:
+        shown = ", ".join(str(d) for d in pending)
+        if not _confirm_duplicate_source(source, shown, same_source, args.yes):
+            return 1
+
+    failures = 0
+    for name, dest in zip(names, pending):
+        dest.mkdir(parents=True, exist_ok=True)
+        job = db.Job(
+            name=name, source=str(source), dest=str(dest),
+            oncalendar=sched.oncalendar, schedule_human=sched.human,
+            keep=args.keep, created_at=datetime.now().isoformat(timespec="seconds"),
+            job_id=uuid.uuid4().hex,
+        )
+        db.add_job(conn, job)
+        try:
+            units.install_units(name, sched.oncalendar,
+                                paths.backup_executable(), str(source))
+        except RuntimeError as exc:
+            db.remove_job(conn, name)
+            sys.stderr.write("error: failed to install timer for %r: %s\n"
+                             % (name, exc))
+            failures += 1
+            continue
+        print("added job %r: %s -> %s (%s, keep %d)"
+              % (name, source, dest, sched.human, args.keep))
+    return 1 if failures else 0
 
 
 def cmd_config(args) -> int:
@@ -120,11 +172,26 @@ def cmd_config(args) -> int:
     if args.default_dest is not None:
         dest = _resolve(args.default_dest)
         dest.mkdir(parents=True, exist_ok=True)
-        db.set_config(conn, "default_dest", str(dest))
-        print("default-dest: %s" % dest)
-        return 0
-    current = db.get_config(conn, "default_dest")
-    print("default-dest: %s" % (current if current else "(not set)"))
+        db.set_default_dests(conn, [str(dest)])
+    elif args.add_default_dest is not None:
+        dest = _resolve(args.add_default_dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        dests = db.get_default_dests(conn)
+        if str(dest) in dests:
+            print("note: %s is already a default destination" % dest,
+                  file=sys.stderr)
+        else:
+            dests.append(str(dest))
+            db.set_default_dests(conn, dests)
+    elif args.remove_default_dest is not None:
+        dest = _resolve(args.remove_default_dest)
+        dests = db.get_default_dests(conn)
+        if str(dest) not in dests:
+            return _err("%s is not a default destination" % dest)
+        dests.remove(str(dest))
+        db.set_default_dests(conn, dests)
+    current = db.get_default_dests(conn)
+    print("default-dest: %s" % (", ".join(current) if current else "(not set)"))
     return 0
 
 
@@ -445,8 +512,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_add)
 
     c = sub.add_parser("config", help="show or set configuration")
-    c.add_argument("--default-dest", dest="default_dest",
-                   help="set the default destination used by 'add' when --dest is omitted")
+    g = c.add_mutually_exclusive_group()
+    g.add_argument("--default-dest", dest="default_dest",
+                   help="replace the default destination list with this single path")
+    g.add_argument("--add-default-dest", dest="add_default_dest",
+                   help="append a destination used by 'add' when --dest is omitted")
+    g.add_argument("--remove-default-dest", dest="remove_default_dest",
+                   help="remove a path from the default destination list")
     c.set_defaults(func=cmd_config)
 
     sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)

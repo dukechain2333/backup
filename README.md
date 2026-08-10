@@ -27,6 +27,9 @@ timers run even when you are logged out.
 ```bash
 # Set a default destination once, so you don't repeat --dest:
 backup config --default-dest /mnt/backups
+# Or keep several — `backup add` then creates one job per destination:
+backup config --add-default-dest /media/usb
+backup config --remove-default-dest /media/usb
 backup config               # show current settings
 
 # In the folder you want to back up — source defaults to the current directory,
@@ -109,6 +112,12 @@ is already backed up, `backup` reminds you of the existing job(s) and asks for
 confirmation first; pass `--yes` to skip the prompt (required when running
 non-interactively, e.g. in a script). Backing up the *same* folder to the
 *same* destination twice is refused as a duplicate.
+
+With multiple **default** destinations configured (`--add-default-dest`),
+`backup add` without `--dest` does this fan-out automatically: one job per
+default destination, named `<base>-<destination-dir>` (e.g. `proj-nas`,
+`proj-usb`), where `<base>` is `--name` or the folder name. Destinations the
+source is already backed up to are skipped with a note.
 
 ### Where things live
 
