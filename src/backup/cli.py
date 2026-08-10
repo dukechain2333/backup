@@ -79,7 +79,11 @@ def cmd_add(args) -> int:
     if args.dest:
         dests = [_resolve(args.dest)]
     else:
-        dests = [_resolve(d) for d in db.get_default_dests(conn)]
+        dests = []
+        for d in db.get_default_dests(conn):
+            resolved = _resolve(d)
+            if resolved not in dests:
+                dests.append(resolved)
         if not dests:
             return _err("no destination: pass --dest or set one with "
                         "'backup config --default-dest <path>' (or several "

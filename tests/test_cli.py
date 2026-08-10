@@ -618,8 +618,6 @@ def test_add_fanout_continues_past_install_failure(xdg, tmp_path, monkeypatch, c
             raise RuntimeError("boom")
 
     monkeypatch.setattr(units, "install_units", flaky)
-    monkeypatch.setattr(units, "is_active", lambda name: True)
-    monkeypatch.setattr(units, "next_run", lambda name: None)
     src = tmp_path / "proj"
     src.mkdir()
     nas, usb = tmp_path / "nas", tmp_path / "usb"
@@ -629,6 +627,20 @@ def test_add_fanout_continues_past_install_failure(xdg, tmp_path, monkeypatch, c
     conn = db.connect()
     jobs = db.list_jobs_by_source(conn, str(src))
     assert [(j.name, j.dest) for j in jobs] == [("proj-usb", str(usb))]
+
+
+def test_add_explicit_dest_ignores_multiple_defaults(xdg, tmp_path, monkeypatch):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    src.mkdir()
+    _add_defaults(tmp_path / "nas", tmp_path / "usb")
+    explicit = tmp_path / "explicit"
+    assert cli.main(["add", "--source", str(src), "--dest", str(explicit),
+                     "--schedule", "hourly"]) == 0
+    conn = db.connect()
+    jobs = db.list_jobs_by_source(conn, str(src))
+    assert [(j.name, j.dest) for j in jobs] == [("proj", str(explicit))]
 
 
 def test_add_repeat_same_command_keeps_name_clash_message(xdg, tmp_path, monkeypatch, capsys):
