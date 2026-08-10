@@ -659,3 +659,39 @@ def test_add_repeat_same_command_keeps_name_clash_message(xdg, tmp_path, monkeyp
     assert rc != 0
     err = capsys.readouterr().err
     assert "already exists" in err and "pass --name" in err
+
+
+def test_run_all_skips_archived(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src1, src2 = tmp_path / "p1", tmp_path / "p2"
+    dst = tmp_path / "bak"
+    for d in (src1, src2, dst):
+        d.mkdir()
+    (src1 / "f").write_text("x")
+    (src2 / "f").write_text("x")
+    cli.main(["add", "--source", str(src1), "--dest", str(dst), "--schedule", "hourly"])
+    cli.main(["add", "--source", str(src2), "--dest", str(dst), "--schedule", "hourly"])
+    assert cli.main(["archive", "p1"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["run", "--all"])
+    out = capsys.readouterr().out
+    assert rc == 0                          # archived job is not a failure
+    assert "p1: skipped (archived)" in out
+    assert "1 skipped (archived)" in out
+
+
+def test_edit_does_not_resurrect_archived_timer(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    installed = []
+    monkeypatch.setattr(units, "install_units",
+                        lambda name, oncal, exe, src: installed.append(name))
+    src, dst = tmp_path / "proj", tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst), "--schedule", "hourly"])
+    assert cli.main(["archive", "proj"]) == 0
+    installed.clear()
+    assert cli.main(["edit", "proj", "--schedule", "daily@03:00"]) == 0
+    assert installed == []                  # archived job stays timer-less
+    assert cli.main(["unarchive", "proj"]) == 0
+    assert installed == ["proj"]            # unarchive brings the timer back

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import shutil
 import subprocess
 import sys
 import uuid
@@ -11,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from . import db, paths, runner, schedule, units
+from . import db, ops, paths, runner, schedule, units
 
 
 def slugify(text: str) -> str:
@@ -213,10 +212,7 @@ def cmd_list(args) -> int:
         "NAME", "STATE", "SCHEDULE", "LAST RUN", "SOURCE -> DEST")
     print(header)
     for job in jobs:
-        if job.blocked_reason:
-            state = "blocked"
-        else:
-            state = "active" if units.is_active(job.name) else "paused"
+        state = ops.job_state(job)
         last = "%s %s" % (job.last_run_at or "-", job.last_status or "")
         print("%-14s %-8s %-18s %-20s %s -> %s" % (
             job.name, state, job.schedule_human, last.strip(),
@@ -229,16 +225,16 @@ def cmd_status(args) -> int:
     job = _require_job(conn, args.name)
     if job is None:
         return 1
-    if job.blocked_reason:
-        state = "blocked"
-    else:
-        state = "active" if units.is_active(job.name) else "paused"
+    state = ops.job_state(job)
     print("job:       %s" % job.name)
     print("source:    %s" % job.source)
     print("dest:      %s" % job.dest)
     print("schedule:  %s (%s)" % (job.schedule_human, job.oncalendar))
     print("retention: keep %d snapshots" % job.keep)
     print("state:     %s" % state)
+    if job.archived_at:
+        print("archived:  %s (%s)" % (job.archived_at,
+                                      job.archived_reason or "manual"))
     if job.blocked_reason:
         print("blocked:   %s" % job.blocked_reason)
     print("last run:  %s [%s] %s" % (
@@ -260,15 +256,36 @@ def cmd_remove(args) -> int:
     job = _require_job(conn, args.name)
     if job is None:
         return 1
-    units.remove_units(job.name)
-    db.remove_job(conn, job.name)
+    try:
+        ops.delete_job(conn, job, purge=args.purge)
+    except ValueError as exc:
+        return _err(str(exc))
     if args.purge:
-        shutil.rmtree(runner.job_dir(job), ignore_errors=True)
         print("removed job %r and purged snapshots" % job.name)
     else:
         print("removed job %r (snapshots kept at %s)"
               % (job.name, runner.job_dir(job)))
     return 0
+
+
+def cmd_verify(args) -> int:
+    conn = db.connect()
+    job = _require_job(conn, args.name)
+    if job is None:
+        return 1
+    snaps = ops.snapshot_status(conn, job)
+    if not snaps:
+        print("no snapshots to verify for %r" % job.name)
+        return 0
+    bad = 0
+    for snap in snaps:
+        verdict, msg = ops.verify_snapshot(conn, job, snap.name)
+        print("%-22s %-9s %s" % (snap.name, verdict, msg))
+        if verdict in ("suspect", "lost"):
+            bad += 1
+    if bad:
+        print("%d snapshot(s) need attention" % bad)
+    return 1 if bad else 0
 
 
 def cmd_pause(args) -> int:
@@ -311,14 +328,22 @@ def cmd_run(args) -> int:
             return 0
         ok = 0
         failed = 0
+        skipped = 0
         for job in jobs:
+            if job.archived_at:
+                print("%s: skipped (archived)" % job.name)
+                skipped += 1
+                continue
             result = runner.run_backup(job, conn=conn, force=args.force)
             print("%s: %s: %s" % (job.name, result.status, result.message))
             if result.status == "ok":
                 ok += 1
             else:
                 failed += 1
-        print("%d ok, %d failed" % (ok, failed))
+        summary = "%d ok, %d failed" % (ok, failed)
+        if skipped:
+            summary += ", %d skipped (archived)" % skipped
+        print(summary)
         return 0 if failed == 0 else 1
 
     job = _require_job(conn, args.name)
@@ -410,7 +435,9 @@ def cmd_edit(args) -> int:
         new_job_dir.parent.mkdir(parents=True, exist_ok=True)
         os.rename(old_job_dir, new_job_dir)
 
-    if args.schedule or args.rename:
+    # An archived job has no timer and must not get one back via edit;
+    # unarchive reinstalls the units with the (possibly updated) schedule.
+    if (args.schedule or args.rename) and not updated.archived_at:
         try:
             units.install_units(updated.name, oncalendar,
                                 paths.backup_executable(), updated.source)
@@ -449,6 +476,39 @@ def cmd_preview(args) -> int:
     for path in files:
         print(path)
     return 0
+
+
+def cmd_archive(args) -> int:
+    conn = db.connect()
+    job = _require_job(conn, args.name)
+    if job is None:
+        return 1
+    if job.archived_at:
+        return _err("job %r is already archived" % job.name)
+    ops.archive_job(conn, job)
+    print("archived %r (timer stopped; snapshots kept at %s)"
+          % (job.name, runner.job_dir(job)))
+    return 0
+
+
+def cmd_unarchive(args) -> int:
+    conn = db.connect()
+    job = _require_job(conn, args.name)
+    if job is None:
+        return 1
+    if not job.archived_at:
+        return _err("job %r is not archived" % job.name)
+    try:
+        ops.unarchive_job(conn, job)
+    except (ValueError, RuntimeError) as exc:
+        return _err(str(exc))
+    print("unarchived %r" % job.name)
+    return 0
+
+
+def cmd_tui(args) -> int:
+    from . import tui
+    return tui.main()
 
 
 def cmd_restore(args) -> int:
@@ -523,12 +583,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list", help="list jobs").set_defaults(func=cmd_list)
 
+    sub.add_parser(
+        "tui", help="interactive dashboard (tasks / destinations / snapshots)"
+    ).set_defaults(func=cmd_tui)
+
     for cmd, fn, help_ in [
         ("status", cmd_status, "show job detail"),
         ("pause", cmd_pause, "pause a job's timer"),
         ("resume", cmd_resume, "resume a job's timer"),
         ("snapshots", cmd_snapshots, "list snapshots for a job"),
         ("preview", cmd_preview, "list files that would be backed up (.backupignore applied)"),
+        ("archive", cmd_archive, "stop a job's timer but keep its snapshots"),
+        ("unarchive", cmd_unarchive, "reactivate an archived job (source must exist)"),
+        ("verify", cmd_verify,
+         "check each snapshot against its recorded size/file-count fingerprint"),
     ]:
         sp = sub.add_parser(cmd, help=help_)
         sp.add_argument("name")

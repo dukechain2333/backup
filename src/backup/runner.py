@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -42,6 +43,29 @@ def list_snapshots(job: db.Job) -> List[Path]:
     return sorted(dirs, key=lambda p: p.name)
 
 
+def tree_stats(path: Path) -> tuple:
+    """(file count, total bytes) of a directory tree. Symlinks counted, not
+    followed; unreadable entries skipped — this is a fingerprint, not an audit."""
+    files = 0
+    total = 0
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            files += 1
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return files, total
+
+
+# A new snapshot this much smaller than the previous one blocks the run: it is
+# far more likely an unmounted/emptied source (or runaway .backupignore) than a
+# real cleanup. Small trees are exempt from the ratio check — only total loss
+# (0 files after a non-empty snapshot) blocks there.
+_SHRINK_MIN_FILES = 20
+_SHRINK_RATIO = 0.1
+
+
 def _log(job: db.Job, message: str) -> None:
     try:
         paths.log_dir().mkdir(parents=True, exist_ok=True)
@@ -52,11 +76,16 @@ def _log(job: db.Job, message: str) -> None:
         pass  # logging must never crash a backup run
 
 
-def _prune(job: db.Job) -> None:
+def _prune(job: db.Job, conn=None) -> None:
     snaps = list_snapshots(job)
     excess = len(snaps) - job.keep
     for old in snaps[:max(0, excess)]:
         shutil.rmtree(old, ignore_errors=True)
+        # Only forget snapshots that are really gone: a failed rmtree (e.g.
+        # read-only destination) must not leave a half-deleted directory that
+        # the DB no longer tracks — it would be re-adopted as a good snapshot.
+        if conn is not None and not old.exists():
+            db.forget_snapshot(conn, job.name, old.name)
 
 
 def run_backup(
@@ -65,6 +94,14 @@ def run_backup(
     now = now or datetime.now()
     source = Path(job.source)
     dest_base = Path(job.dest)
+
+    if job.archived_at:
+        # Refuse without recording a run: an archived job is dormant and its
+        # last_run/last_status should keep describing its last real backup.
+        msg = ("job is archived (%s); unarchive it to back up again"
+               % (job.archived_reason or "manual"))
+        _log(job, "archived: %s" % msg)
+        return RunResult(status="archived", message=msg, snapshot=None)
 
     if job.blocked_reason and not force:
         return _finish(
@@ -116,11 +153,38 @@ def run_backup(
             result.returncode, result.stderr.strip())
         return _finish(job, conn, now, "failed", msg, None)
 
+    new_count, new_bytes = tree_stats(partial)
+    if previous and not force:
+        prev = previous[-1]
+        prev_count = None
+        if conn is not None:
+            stats = db.get_snapshot_stats(conn, job.name, prev.name)
+            if stats is not None:
+                prev_count = stats[0]
+        if prev_count is None:
+            prev_count, _ = tree_stats(prev)
+        # Refuse to rotate good snapshots away in favor of a suspiciously
+        # shrunken copy: the classic cause is a source on a mount point whose
+        # drive is absent — the directory exists but is empty.
+        if prev_count and (new_count == 0 or (
+                prev_count >= _SHRINK_MIN_FILES
+                and new_count < prev_count * _SHRINK_RATIO)):
+            shutil.rmtree(partial, ignore_errors=True)
+            reason = ("source shrank from %d to %d files (unmounted drive, "
+                      "emptied directory, or over-broad .backupignore?)"
+                      % (prev_count, new_count))
+            if conn is not None:
+                db.update_job(conn, job.name, blocked_reason=reason)
+            return _finish(
+                job, conn, now, "blocked",
+                "refusing to rotate snapshots: %s; run 'backup run %s "
+                "--force' if this is intentional" % (reason, job.name), None)
+
     if final.is_dir():
         shutil.rmtree(final, ignore_errors=True)
     partial.replace(final)
     _update_latest(job, final)
-    _prune(job)
+    _prune(job, conn)
 
     try:
         integrity.write_marker(job, stamp)
@@ -128,6 +192,9 @@ def run_backup(
         _log(job, "warning: could not write integrity marker: %s" % exc)
     if conn is not None:
         db.update_job(conn, job.name, last_snapshot=stamp, blocked_reason=None)
+        db.record_snapshot(conn, job.name, stamp,
+                           now.isoformat(timespec="seconds"),
+                           file_count=new_count, total_bytes=new_bytes)
 
     suffix = " (forced, re-baselined)" if force else ""
     msg = "snapshot %s (%d kept)%s" % (stamp, len(list_snapshots(job)), suffix)
