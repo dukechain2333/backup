@@ -58,6 +58,28 @@ backup remove important-project           # keep snapshots
 backup remove important-project --purge   # also delete snapshots
 ```
 
+### Disaster recovery
+
+If the system is lost but the backup drive survives, install the tool on the
+new machine and re-register the surviving backups:
+
+```sh
+backup import /mnt/bak/important-project  # one job directory…
+backup import /mnt/bak                    # …or a whole destination of them
+```
+
+The output states which form was detected — a **job directory** (it contains
+`snapshots/`) or a **destination directory** (its subdirectories do). Each
+job's `.backup-meta.json` marker restores its identity, original source path,
+and last-snapshot record; schedule and retention lived only in the lost
+database, so imported jobs get the defaults (`daily@02:00`, keep 7).
+
+Imported jobs arrive **archived**: no timer starts, and their snapshots are
+immediately browsable and restorable (TUI or `backup restore`). Once data is
+restored and the source path is right — `backup edit <name> --source <dir>`
+if it moved — run `backup unarchive <name>` to resume scheduled backups.
+Importing never writes to the backup drive; name collisions are skipped.
+
 ### TUI
 
 `backup tui` opens a three-column dashboard:

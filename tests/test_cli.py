@@ -732,3 +732,116 @@ def test_run_all_counts_unchanged(xdg, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "0 ok, 0 failed, 2 unchanged" in out
+
+
+def _fake_job_dir(base, name, snaps=("2026-08-01_02-00-00",), marker=None):
+    d = base / name
+    for s in snaps:
+        (d / "snapshots" / s).mkdir(parents=True)
+        (d / "snapshots" / s / "f.txt").write_text("data")
+    if marker is not None:
+        import json
+        (d / ".backup-meta.json").write_text(json.dumps(marker))
+    return d
+
+
+def test_import_job_directory_announces_form(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    d = _fake_job_dir(tmp_path / "bak", "proj")
+    rc = cli.main(["import", str(d)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "job directory" in out
+    assert "imported 1 job(s), skipped 0" in out
+    job = db.get_job(db.connect(), "proj")
+    assert job is not None
+    assert job.archived_reason == "imported"
+
+
+def test_import_dest_directory_announces_form(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    _silence_systemd(monkeypatch)
+    bak = tmp_path / "bak"
+    _fake_job_dir(bak, "alpha")
+    _fake_job_dir(bak, "beta")
+    rc = cli.main(["import", str(bak)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "destination directory" in out
+    assert "found 2 job directories" in out
+    assert "imported 2 job(s), skipped 0" in out
+    conn = db.connect()
+    assert db.get_job(conn, "alpha") is not None
+    assert db.get_job(conn, "beta") is not None
+
+
+def test_import_counts_collisions_as_skipped(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    bak = tmp_path / "bak"
+    _fake_job_dir(bak, "alpha")
+    _fake_job_dir(bak, "beta")
+    cli.main(["import", str(bak / "alpha")])
+    capsys.readouterr()
+    rc = cli.main(["import", str(bak)])  # alpha already imported
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "imported 1 job(s), skipped 1" in out
+
+
+def test_import_bad_path_errors(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    (tmp_path / "random").mkdir()
+    rc = cli.main(["import", str(tmp_path / "random")])
+    assert rc != 0
+    assert capsys.readouterr().err
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_edit_source_updates_job_and_marker(xdg, tmp_path, monkeypatch, capsys):
+    import backup.db as db
+    import backup.integrity as integrity
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    (src / "f.txt").write_text("data")
+    cli.main(["add", "--source", str(src), "--dest", str(dst),
+              "--schedule", "hourly"])
+    cli.main(["run", "proj"])
+    newsrc = tmp_path / "proj-moved"
+    newsrc.mkdir()
+    rc = cli.main(["edit", "proj", "--source", str(newsrc)])
+    assert rc == 0
+    conn = db.connect()
+    job = db.get_job(conn, "proj")
+    assert job.source == str(newsrc)
+    assert integrity.read_marker(job)["source"] == str(newsrc)
+    # verification must keep passing after the deliberate move
+    ok, reason = integrity.verify(job)
+    assert ok, reason
+
+
+def test_edit_source_missing_dir_refused(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    cli.main(["add", "--source", str(src), "--dest", str(dst),
+              "--schedule", "hourly"])
+    rc = cli.main(["edit", "proj", "--source", str(tmp_path / "nope")])
+    assert rc != 0
+
+
+def test_edit_source_containing_dest_refused(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "outer" / "bak"
+    src.mkdir()
+    dst.mkdir(parents=True)
+    cli.main(["add", "--source", str(src), "--dest", str(dst),
+              "--schedule", "hourly"])
+    rc = cli.main(["edit", "proj", "--source", str(tmp_path / "outer")])
+    assert rc != 0

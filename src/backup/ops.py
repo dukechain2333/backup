@@ -6,6 +6,7 @@ only decide when to call and how to render the result.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -204,6 +205,108 @@ def default_restore_target(job: db.Job) -> Path:
     if source.is_dir():
         return source
     return Path.home() / (source.name or job.name)
+
+
+_SNAP_NAME_RE = re.compile(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
+
+# Schedule/retention lived only in the lost database; imported jobs get the
+# same defaults as `backup add` and stay archived until the user reviews them.
+_IMPORT_ONCALENDAR = "*-*-* 02:00:00"
+_IMPORT_SCHEDULE_HUMAN = "daily at 02:00"
+_IMPORT_KEEP = 7
+
+
+def _is_job_dir(path: Path) -> bool:
+    return (path / "snapshots").is_dir()
+
+
+def scan_import_path(path: Path) -> Tuple[str, List[Path]]:
+    """Classify a path for disaster-recovery import.
+
+    Returns ("job", [path]) for a single job directory (it contains
+    `snapshots/`), or ("dest", children) for a destination directory whose
+    immediate children are job directories. Raises ValueError — with a
+    targeted hint for the two classic mistakes (pointing at `snapshots/`
+    itself, or at one timestamped snapshot) — when neither form matches.
+    """
+    if not path.is_dir():
+        raise ValueError("%s is not a directory" % path)
+    if _is_job_dir(path):
+        return "job", [path]
+    if path.name == "snapshots" and _is_job_dir(path.parent):
+        raise ValueError(
+            "%s is a snapshots directory; pass its parent job directory %s"
+            % (path, path.parent))
+    if _SNAP_NAME_RE.fullmatch(path.name) and path.parent.name == "snapshots":
+        raise ValueError(
+            "%s is a single snapshot; pass the job directory %s above it"
+            % (path, path.parent.parent))
+    children = sorted(
+        (p for p in path.iterdir() if p.is_dir() and _is_job_dir(p)),
+        key=lambda p: p.name)
+    if children:
+        return "dest", children
+    raise ValueError(
+        "%s is neither a job directory (containing snapshots/) nor a "
+        "destination directory whose subdirectories contain snapshots/"
+        % path)
+
+
+def import_job_dir(
+    conn, job_path: Path, now: Optional[datetime] = None
+) -> Tuple[Optional[str], str]:
+    """Register an existing on-disk job directory as an archived job.
+
+    Reads the destination marker when present to recover job_id, source and
+    last_snapshot; never writes to the backup drive. Returns (name, message),
+    with name None when the directory was skipped.
+    """
+    now = now or datetime.now()
+    # The name must be the directory name: job_dir() locates data at
+    # dest/name, so a marker that disagrees cannot be honored.
+    name = job_path.name
+    if db.get_job(conn, name) is not None:
+        return None, "a job named %r already exists; skipped %s" % (
+            name, job_path)
+
+    marker = integrity.read_marker(db.Job(
+        name=name, source="", dest=str(job_path.parent),
+        oncalendar="", schedule_human="", keep=1, created_at="")) or {}
+
+    warning = ""
+    last_snapshot = marker.get("last_snapshot")
+    if last_snapshot is not None and not (
+            job_path / "snapshots" / str(last_snapshot)).is_dir():
+        warning = ("; recorded last snapshot %s is missing on disk, "
+                   "cleared so the next run re-adopts" % last_snapshot)
+        last_snapshot = None
+
+    source = marker.get("source")
+    if not isinstance(source, str) or not source:
+        # Placeholder must be unique per job: (source, dest) is UNIQUE, and a
+        # centralized destination may hold several marker-less job dirs. Not
+        # a real path, so unarchive stays refused until 'edit --source'.
+        source = "(unknown:%s)" % name
+    job = db.Job(
+        name=name, source=source,
+        dest=str(job_path.parent),
+        oncalendar=_IMPORT_ONCALENDAR, schedule_human=_IMPORT_SCHEDULE_HUMAN,
+        keep=_IMPORT_KEEP,
+        created_at=now.isoformat(timespec="seconds"),
+        job_id=marker.get("job_id"),
+        last_snapshot=last_snapshot,
+        archived_at=now.isoformat(timespec="seconds"),
+        archived_reason="imported",
+    )
+    try:
+        db.add_job(conn, job)
+    except ValueError as exc:
+        return None, "cannot import %s: %s" % (job_path, exc)
+    snaps = runner.list_snapshots(job)
+    for snap in snaps:
+        db.record_snapshot(conn, name, snap.name)
+    return name, "imported %r (%d snapshot%s, archived)%s" % (
+        name, len(snaps), "" if len(snaps) == 1 else "s", warning)
 
 
 def restore_snapshot(

@@ -35,8 +35,11 @@ Per job directory, read `.backup-meta.json` (written by every successful
 backup): recover `job_id`, `source`, and `last_snapshot`. `last_snapshot` is
 kept only if that snapshot still exists on disk; otherwise it is cleared (and
 a warning printed) so the next run adopts instead of blocking. Without a
-marker: name from the directory name, empty source, no job_id (assigned on
-next run by the existing legacy-adopt path).
+marker: name from the directory name, a `(unknown:<name>)` source placeholder
+(unique per job — `(source, dest)` is UNIQUE and a destination may hold
+several marker-less job dirs; not a real path, so unarchive stays refused
+until `edit --source`), and no job_id (assigned on next run by the existing
+legacy-adopt path).
 
 The job name is ALWAYS the directory name — `job_dir()` derives the on-disk
 path from `dest/name`, so a marker name that disagrees with the directory
