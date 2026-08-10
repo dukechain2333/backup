@@ -88,6 +88,12 @@ def remove_units(name: str) -> None:
     _systemctl("daemon-reload")
 
 
+def disable_units(name: str) -> None:
+    """Best-effort disable, keeping the unit files (a later enable restores
+    the timer without reinstalling). Missing units are not an error."""
+    _systemctl("disable", "--now", _timer_unit(name))
+
+
 def pause_units(name: str) -> None:
     _systemctl_checked("disable", "--now", _timer_unit(name))
 
