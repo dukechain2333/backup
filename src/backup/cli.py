@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from . import db, ops, paths, runner, schedule, units
+from . import db, integrity, ops, paths, runner, schedule, units
 
 
 def slugify(text: str) -> str:
@@ -407,6 +407,15 @@ def cmd_edit(args) -> int:
 
     has_snapshots = bool(runner.list_snapshots(job))
 
+    if args.source:
+        new_source = _resolve(args.source)
+        if not new_source.is_dir():
+            return _err("source directory missing: %s" % new_source)
+        if _is_inside(Path(job.dest), new_source) or Path(job.dest) == new_source:
+            return _err("destination %s is inside source %s (would recurse)"
+                        % (job.dest, new_source))
+        updates["source"] = str(new_source)
+
     if args.dest:
         new_dest = _resolve(args.dest)
         if _is_inside(new_dest, Path(job.source)) or new_dest == Path(job.source):
@@ -440,9 +449,18 @@ def cmd_edit(args) -> int:
         new_job_dir.parent.mkdir(parents=True, exist_ok=True)
         os.rename(old_job_dir, new_job_dir)
 
+    # A deliberate source move must not trip integrity verification: refresh
+    # the destination marker (when one exists) so it records the new source.
+    if args.source and integrity.read_marker(updated) is not None:
+        try:
+            integrity.write_marker(updated, updated.last_snapshot)
+        except OSError as exc:
+            print("warning: could not refresh destination marker: %s" % exc)
+
     # An archived job has no timer and must not get one back via edit;
     # unarchive reinstalls the units with the (possibly updated) schedule.
-    if (args.schedule or args.rename) and not updated.archived_at:
+    # Source changes need a reinstall too — units embed the source path.
+    if (args.schedule or args.rename or args.source) and not updated.archived_at:
         try:
             units.install_units(updated.name, oncalendar,
                                 paths.backup_executable(), updated.source)
@@ -514,6 +532,36 @@ def cmd_unarchive(args) -> int:
 def cmd_tui(args) -> int:
     from . import tui
     return tui.main()
+
+
+def cmd_import(args) -> int:
+    conn = db.connect()
+    path = _resolve(args.path)
+    try:
+        kind, dirs = ops.scan_import_path(path)
+    except ValueError as exc:
+        return _err(str(exc))
+    if kind == "job":
+        print("importing job directory: %s" % path)
+    else:
+        print("importing destination directory: %s — found %d job "
+              "directories: %s"
+              % (path, len(dirs), ", ".join(d.name for d in dirs)))
+    imported = 0
+    skipped = 0
+    for d in dirs:
+        name, msg = ops.import_job_dir(conn, d)
+        print("  %s" % msg)
+        if name is None:
+            skipped += 1
+        else:
+            imported += 1
+    print("imported %d job(s), skipped %d" % (imported, skipped))
+    if imported:
+        print("imported jobs are archived: browse/restore now; review "
+              "source and schedule with 'backup edit', then 'backup "
+              "unarchive' to resume backups")
+    return 0
 
 
 def cmd_restore(args) -> int:
@@ -628,9 +676,18 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("name")
     e.add_argument("--schedule")
     e.add_argument("--keep", type=int)
+    e.add_argument("--source",
+                   help="new source directory (e.g. restored to a new path)")
     e.add_argument("--dest")
     e.add_argument("--rename")
     e.set_defaults(func=cmd_edit)
+
+    im = sub.add_parser(
+        "import",
+        help="register an existing backup location (disaster recovery)")
+    im.add_argument("path", help="a job directory, or a destination "
+                                 "directory containing job directories")
+    im.set_defaults(func=cmd_import)
 
     rs = sub.add_parser("restore", help="restore a snapshot")
     rs.add_argument("name")

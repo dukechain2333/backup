@@ -493,3 +493,110 @@ def test_restore_snapshot_refuses_missing(tmp_path):
     ok, msg = ops.restore_snapshot(job, "2026-01-01_00-00-00", tmp_path / "out")
     assert not ok
     assert "not found" in msg.lower() or "lost" in msg.lower()
+
+
+# ---------- import: disaster recovery ----------
+
+def _job_dir_on_disk(base, name, snaps=("2026-08-01_02-00-00",), marker=None):
+    """Build a job directory as a real backup run would leave it."""
+    d = base / name
+    for s in snaps:
+        snap = d / "snapshots" / s
+        snap.mkdir(parents=True)
+        (snap / "f.txt").write_text("data")
+    if marker is not None:
+        import json
+        (d / ".backup-meta.json").write_text(json.dumps(marker))
+    return d
+
+
+def test_scan_detects_job_directory(tmp_path):
+    d = _job_dir_on_disk(tmp_path, "proj")
+    kind, dirs = ops.scan_import_path(d)
+    assert kind == "job"
+    assert dirs == [d]
+
+
+def test_scan_detects_destination_directory(tmp_path):
+    a = _job_dir_on_disk(tmp_path, "alpha")
+    b = _job_dir_on_disk(tmp_path, "beta")
+    (tmp_path / "not-a-job").mkdir()  # ignored: no snapshots/ inside
+    kind, dirs = ops.scan_import_path(tmp_path)
+    assert kind == "dest"
+    assert dirs == [a, b]
+
+
+def test_scan_snapshots_dir_gets_hint(tmp_path):
+    d = _job_dir_on_disk(tmp_path, "proj")
+    with pytest.raises(ValueError, match="parent"):
+        ops.scan_import_path(d / "snapshots")
+
+
+def test_scan_snapshot_timestamp_dir_gets_hint(tmp_path):
+    d = _job_dir_on_disk(tmp_path, "proj")
+    with pytest.raises(ValueError, match="job directory"):
+        ops.scan_import_path(d / "snapshots" / "2026-08-01_02-00-00")
+
+
+def test_scan_unrecognized_path_errors(tmp_path):
+    (tmp_path / "random").mkdir()
+    with pytest.raises(ValueError):
+        ops.scan_import_path(tmp_path / "random")
+
+
+def test_import_recovers_marker_metadata(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    d = _job_dir_on_disk(
+        tmp_path / "bak", "proj",
+        snaps=("2026-08-01_02-00-00", "2026-08-02_02-00-00"),
+        marker={"job_id": "orig-id", "name": "proj",
+                "source": "/old/home/proj",
+                "last_snapshot": "2026-08-02_02-00-00"})
+    name, msg = ops.import_job_dir(conn, d,
+                                   now=datetime(2026, 8, 9, 12, 0, 0))
+    assert name == "proj"
+    job = get_job(conn, "proj")
+    assert job.job_id == "orig-id"
+    assert job.source == "/old/home/proj"
+    assert job.dest == str(tmp_path / "bak")
+    assert job.last_snapshot == "2026-08-02_02-00-00"
+    assert job.archived_at is not None          # imported dormant
+    assert job.archived_reason == "imported"
+    assert list_snapshot_names(conn, "proj") == [
+        "2026-08-01_02-00-00", "2026-08-02_02-00-00"]
+
+
+def test_import_without_marker_uses_dir_name(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    d = _job_dir_on_disk(tmp_path / "bak", "photos")
+    name, msg = ops.import_job_dir(conn, d)
+    assert name == "photos"
+    job = get_job(conn, "photos")
+    assert job.source == "(unknown:photos)"     # placeholder, to be edited
+    assert job.job_id is None                   # assigned on next real run
+    assert job.last_snapshot is None
+    assert job.archived_reason == "imported"
+
+
+def test_import_clears_lost_last_snapshot(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    d = _job_dir_on_disk(
+        tmp_path / "bak", "proj",
+        marker={"job_id": "orig-id", "name": "proj", "source": "/old",
+                "last_snapshot": "2026-08-05_02-00-00"})  # not on disk
+    name, msg = ops.import_job_dir(conn, d)
+    job = get_job(conn, "proj")
+    assert job.last_snapshot is None            # adopt, don't block
+    assert "2026-08-05_02-00-00" in msg         # warned about the loss
+
+
+def test_import_skips_name_collision(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    add_job(conn, Job(name="proj", source="/s", dest="/d",
+                      oncalendar="x", schedule_human="x", keep=7,
+                      created_at="2026-08-09T00:00:00"))
+    d = _job_dir_on_disk(tmp_path / "bak", "proj")
+    name, msg = ops.import_job_dir(conn, d)
+    assert name is None
+    assert "exists" in msg
+    assert get_job(conn, "proj").dest == "/d"   # untouched
