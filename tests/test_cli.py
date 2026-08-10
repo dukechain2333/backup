@@ -695,3 +695,40 @@ def test_edit_does_not_resurrect_archived_timer(xdg, tmp_path, monkeypatch, caps
     assert installed == []                  # archived job stays timer-less
     assert cli.main(["unarchive", "proj"]) == 0
     assert installed == ["proj"]            # unarchive brings the timer back
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_run_unchanged_exits_zero(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    src = tmp_path / "proj"
+    dst = tmp_path / "bak"
+    src.mkdir()
+    dst.mkdir()
+    (src / "f.txt").write_text("data")
+    cli.main(["add", "--source", str(src), "--dest", str(dst),
+              "--schedule", "hourly"])
+    assert cli.main(["run", "proj"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["run", "proj"])  # nothing changed since first run
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "unchanged" in out
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_run_all_counts_unchanged(xdg, tmp_path, monkeypatch, capsys):
+    _silence_systemd(monkeypatch)
+    dst = tmp_path / "bak"
+    dst.mkdir()
+    for nm in ("alpha", "beta"):
+        src = tmp_path / nm
+        src.mkdir()
+        (src / "f.txt").write_text(nm)
+        cli.main(["add", "--source", str(src), "--dest", str(dst),
+                  "--schedule", "hourly", "--name", nm])
+    assert cli.main(["run", "--all"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["run", "--all"])  # nothing changed since first pass
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "0 ok, 0 failed, 2 unchanged" in out
