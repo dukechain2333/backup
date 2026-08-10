@@ -85,7 +85,7 @@ _C_DIM = 5
 _C_SEL_RED = 6
 
 _HELP = ("[Enter/←→] navigate  [r]estore  [v]erify  [a]rchive  [u]narchive  "
-         "[d]elete  [g] refresh  [q]uit")
+         "[i]mport  [d]elete  [g] refresh  [q]uit")
 
 
 def _state_color(state: str) -> int:
@@ -240,6 +240,33 @@ class App:
             self.note("deleted task %r%s" % (
                 task.label, " and purged its snapshots" if choice == "p" else
                 "; snapshots kept on disk"), _C_YELLOW)
+
+    def do_import(self, ui) -> None:
+        path = ui.prompt("Import backup location (job dir or dest dir): ", "")
+        if path is None or not path.strip():
+            self.note("import cancelled")
+            return
+        p = Path(path.strip()).expanduser()
+        try:
+            kind, dirs = ops.scan_import_path(p)
+        except ValueError as exc:
+            self.note("import: %s" % exc, _C_RED)
+            return
+        imported, skipped = 0, 0
+        for d in dirs:
+            name, _ = ops.import_job_dir(self.conn, d)
+            if name is None:
+                skipped += 1
+            else:
+                imported += 1
+        form = ("job directory" if kind == "job"
+                else "destination directory with %d job dirs" % len(dirs))
+        self.refresh_model()
+        self.note(
+            "import %s: %d imported, %d skipped — imported jobs are "
+            "archived; fix source via CLI edit, then [u]narchive"
+            % (form, imported, skipped),
+            _C_GREEN if imported else _C_YELLOW)
 
     def do_restore(self, ui) -> None:
         dest = self.dest
@@ -603,6 +630,8 @@ def _run(scr, conn) -> None:
             app.do_verify(ui)
         elif ch == ord("a"):
             app.do_archive(ui)
+        elif ch == ord("i"):
+            app.do_import(ui)
         elif ch == ord("u"):
             app.do_unarchive(ui)
         elif ch == ord("d"):

@@ -222,3 +222,52 @@ def test_archived_dest_with_snapshots_not_lost(tmp_path, monkeypatch):
     assert task.archived is True
     assert task.lost is False
     assert task.dests[0].snapshots[0].lost is False
+
+
+def test_app_import_dest_directory(tmp_path, monkeypatch):
+    from test_ops import _job_dir_on_disk
+    _silence_systemd(monkeypatch)
+    conn = connect(tmp_path / "jobs.db")
+    bak = tmp_path / "bakdisk"
+    _job_dir_on_disk(bak, "alpha")
+    _job_dir_on_disk(bak, "beta")
+
+    app = _app(conn)
+    app.do_import(FakeUi(text=str(bak)))
+    assert "destination directory" in app.message
+    assert "2 imported" in app.message
+    names = sorted(d.job.name for t in app.model.tasks for d in t.dests)
+    assert names == ["alpha", "beta"]
+    assert all(t.archived for t in app.model.tasks)
+
+
+def test_app_import_job_directory(tmp_path, monkeypatch):
+    from test_ops import _job_dir_on_disk
+    _silence_systemd(monkeypatch)
+    conn = connect(tmp_path / "jobs.db")
+    d = _job_dir_on_disk(tmp_path / "bakdisk", "proj")
+
+    app = _app(conn)
+    app.do_import(FakeUi(text=str(d)))
+    assert "job directory" in app.message
+    assert "1 imported" in app.message
+    assert [t.dests[0].job.name for t in app.model.tasks] == ["proj"]
+
+
+def test_app_import_cancelled(tmp_path, monkeypatch):
+    _silence_systemd(monkeypatch)
+    conn = connect(tmp_path / "jobs.db")
+    app = _app(conn)
+    app.do_import(FakeUi(text=""))
+    assert "cancel" in app.message
+    assert app.model.tasks == []
+
+
+def test_app_import_bad_path_shows_error(tmp_path, monkeypatch):
+    _silence_systemd(monkeypatch)
+    conn = connect(tmp_path / "jobs.db")
+    (tmp_path / "random").mkdir()
+    app = _app(conn)
+    app.do_import(FakeUi(text=str(tmp_path / "random")))
+    assert "neither" in app.message
+    assert app.model.tasks == []
