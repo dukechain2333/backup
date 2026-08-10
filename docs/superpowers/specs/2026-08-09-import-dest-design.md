@@ -63,6 +63,12 @@ refuses when the source directory is missing) turns the job live again.
 Name collision with an existing job: skip that directory with a message.
 Summary line: `imported N job(s), skipped M`.
 
+## TUI
+
+The `i` key prompts for a path, runs the same scan/import, announces the
+detected form in the status line with imported/skipped counts, and refreshes
+the task list. Cancel with an empty path; scan errors show in red.
+
 ## edit --source
 
 To close the recovery loop, `backup edit <name> --source <dir>` updates the
