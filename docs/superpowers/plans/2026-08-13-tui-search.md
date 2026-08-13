@@ -420,7 +420,7 @@ Run `backup tui` in a real terminal and verify against the spec:
 5. Esc → full list back, selection where it was before `/`.
 6. Query with no matches → both sections show `(none)`, Enter behaves like
    Esc.
-7. `g` while searching refreshes without crashing and keeps the filter.
+7. Typing `g` while searching appends to the query (refresh is unavailable until Enter/Esc).
 
 - [ ] **Step 5: Update README**
 
