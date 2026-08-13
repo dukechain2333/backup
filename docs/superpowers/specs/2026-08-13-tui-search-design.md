@@ -50,7 +50,7 @@ the usual keys (`r`, `v`, `a`, …).
 - `App.tasks` property returns the filtered view of `model.tasks`; the
   selection helpers (`task`, `_clamp`), `move`, and `_draw` switch from
   `model.tasks` to it. `refresh_model`'s selection-restore also looks up the
-  filtered list, so `g` while searching keeps working.
+  filtered list (`g` itself is a query character while searching — refresh is unavailable until Enter/Esc, so the filtered lookup only matters for the empty-query case).
 - The main loop routes keys to a search handler first when `searching` is
   true; `Ui.prompt` (blocking, bar-only redraw) is not reused — incremental
   filtering needs a full `_draw` per keystroke.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import curses
 from pathlib import Path
 
 import backup.units as units
@@ -271,3 +272,106 @@ def test_app_import_bad_path_shows_error(tmp_path, monkeypatch):
     app.do_import(FakeUi(text=str(tmp_path / "random")))
     assert "neither" in app.message
     assert app.model.tasks == []
+
+
+# ---------------------------------------------------------------- search
+
+
+def _task(label, archived=False):
+    return tui.TaskView(source="/src/" + label, label=label,
+                        archived=archived)
+
+
+def _filter_app(labels, query=""):
+    """App over a hand-built model; conn unused by the filter code paths."""
+    app = tui.App(None)
+    app.model = tui.Model(tasks=[_task(l) for l in labels])
+    app.search_query = query
+    return app
+
+
+def test_match_is_case_insensitive_substring():
+    assert tui._match("hyper-sagnn", "SAGNN")
+    assert tui._match("hypersagnn-dn", "sagnn")
+    assert not tui._match("hypersagnn-dn", "hsd")   # no fuzzy subsequence
+    assert tui._match("anything", "")               # empty query matches all
+
+
+def test_tasks_property_filters_by_query():
+    app = _filter_app(["esco", "hyper-sagnn", "hypersagnn-dn"], "sagnn")
+    assert [t.label for t in app.tasks] == ["hyper-sagnn", "hypersagnn-dn"]
+    app.search_query = ""
+    assert [t.label for t in app.tasks] == [
+        "esco", "hyper-sagnn", "hypersagnn-dn"]
+
+
+def test_selection_stays_in_bounds_when_filter_empties_list():
+    app = _filter_app(["esco", "metacell"])
+    app.task_i = 1
+    app.search_query = "zzz"
+    app._clamp()
+    assert app.tasks == []
+    assert app.task is None
+    assert app.dest is None
+    assert app.snap is None
+
+
+def _typing(app, text):
+    for ch in text:
+        app.search_key(ord(ch))
+
+
+def test_search_typing_filters_and_resets_selection():
+    app = _filter_app(["esco", "hyper-sagnn", "hypersagnn-dn"])
+    app.task_i = 2
+    app.col = 1
+    app.start_search()
+    assert app.searching is True
+    assert app.col == 0
+    _typing(app, "sagnn")
+    assert app.search_query == "sagnn"
+    assert [t.label for t in app.tasks] == ["hyper-sagnn", "hypersagnn-dn"]
+    assert app.task.label == "hyper-sagnn"      # reset to first match
+
+
+def test_search_enter_lands_on_chosen_task_with_full_list():
+    app = _filter_app(["esco", "hyper-sagnn", "hypersagnn-dn"])
+    app.start_search()
+    _typing(app, "sagnn")
+    app.search_key(curses.KEY_DOWN)             # move to hypersagnn-dn
+    app.search_key(10)                          # Enter
+    assert app.searching is False
+    assert app.search_query == ""               # filter cleared
+    assert len(app.tasks) == 3                  # full list restored
+    assert app.task.label == "hypersagnn-dn"    # selection kept
+
+
+def test_search_esc_restores_presearch_selection():
+    app = _filter_app(["esco", "hyper-sagnn", "hypersagnn-dn"])
+    app.task_i = 1                              # hyper-sagnn selected
+    app.start_search()
+    _typing(app, "esco")
+    app.search_key(27)                          # Esc
+    assert app.searching is False
+    assert app.search_query == ""
+    assert app.task.label == "hyper-sagnn"
+
+
+def test_search_enter_with_no_match_behaves_like_esc():
+    app = _filter_app(["esco", "metacell"])
+    app.task_i = 1
+    app.start_search()
+    _typing(app, "zzz")
+    assert app.tasks == []
+    app.search_key(10)                          # Enter on empty result
+    assert app.searching is False
+    assert app.task.label == "metacell"
+
+
+def test_search_backspace_refilters():
+    app = _filter_app(["esco", "metacell"])
+    app.start_search()
+    _typing(app, "mz")
+    assert app.tasks == []
+    app.search_key(curses.KEY_BACKSPACE)
+    assert [t.label for t in app.tasks] == ["metacell"]

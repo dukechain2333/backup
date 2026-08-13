@@ -84,8 +84,8 @@ _C_YELLOW = 4
 _C_DIM = 5
 _C_SEL_RED = 6
 
-_HELP = ("[Enter/←→] navigate  [r]estore  [v]erify  [a]rchive  [u]narchive  "
-         "[i]mport  [d]elete  [g] refresh  [q]uit")
+_HELP = ("[/] search  [Enter/←→] navigate  [r]estore  [v]erify  [a]rchive  "
+         "[u]narchive  [i]mport  [d]elete  [g] refresh  [q]uit")
 
 
 def _state_color(state: str) -> int:
@@ -95,6 +95,11 @@ def _state_color(state: str) -> int:
         "archived": _C_YELLOW,
         "blocked": _C_RED,
     }.get(state, _C_NORMAL)
+
+
+def _match(label: str, query: str) -> bool:
+    """Case-insensitive contiguous substring; empty query matches all."""
+    return query.lower() in label.lower()
 
 
 class App:
@@ -107,13 +112,24 @@ class App:
         self.snap_i = 0
         self.message = ""
         self.message_color = _C_NORMAL
+        self.search_query = ""         # task filter; "" shows all tasks
+        self.searching = False         # search input mode active
+        self._presearch_source = None  # selection to restore on Esc
 
     # ---- selection helpers
 
     @property
+    def tasks(self) -> List[TaskView]:
+        """Tasks visible under the current search filter."""
+        if not self.search_query:
+            return self.model.tasks
+        return [t for t in self.model.tasks
+                if _match(t.label, self.search_query)]
+
+    @property
     def task(self) -> Optional[TaskView]:
-        if 0 <= self.task_i < len(self.model.tasks):
-            return self.model.tasks[self.task_i]
+        if 0 <= self.task_i < len(self.tasks):
+            return self.tasks[self.task_i]
         return None
 
     @property
@@ -135,7 +151,7 @@ class App:
         self.model = load_model(self.conn)
         self.task_i = 0
         if selected is not None:
-            for i, t in enumerate(self.model.tasks):
+            for i, t in enumerate(self.tasks):
                 if t.source == selected:
                     self.task_i = i
                     break
@@ -146,7 +162,7 @@ class App:
                       % ", ".join(self.model.auto_archived), _C_YELLOW)
 
     def _clamp(self) -> None:
-        self.task_i = max(0, min(self.task_i, len(self.model.tasks) - 1))
+        self.task_i = max(0, min(self.task_i, len(self.tasks) - 1))
         n_dest = len(self.task.dests) if self.task else 0
         self.dest_i = max(0, min(self.dest_i, n_dest - 1))
         n_snap = len(self.dest.snapshots) if self.dest else 0
@@ -171,6 +187,52 @@ class App:
 
     def focus(self, col: int) -> None:
         self.col = max(0, min(2, col))
+
+    # ---- search
+
+    def start_search(self) -> None:
+        self.searching = True
+        self.search_query = ""
+        self._presearch_source = self.task.source if self.task else None
+        self.col = 0
+        self.task_i = self.dest_i = self.snap_i = 0
+
+    def _select_source(self, source: Optional[str]) -> None:
+        if source is not None:
+            for i, t in enumerate(self.tasks):
+                if t.source == source:
+                    self.task_i = i
+                    break
+        self._clamp()
+
+    def accept_search(self) -> None:
+        chosen = self.task.source if self.task else self._presearch_source
+        self.searching = False
+        self.search_query = ""
+        self._select_source(chosen)
+
+    def cancel_search(self) -> None:
+        self.searching = False
+        self.search_query = ""
+        self._select_source(self._presearch_source)
+
+    def search_key(self, ch: int) -> None:
+        if ch in (curses.KEY_ENTER, 10, 13):
+            self.accept_search()
+        elif ch == 27:                                    # Esc
+            self.cancel_search()
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            self.search_query = self.search_query[:-1]
+            self.task_i = self.dest_i = self.snap_i = 0
+            self._clamp()
+        elif ch == curses.KEY_DOWN:
+            self.move(1)
+        elif ch == curses.KEY_UP:
+            self.move(-1)
+        elif 32 <= ch < 127:                              # printable ASCII
+            self.search_query += chr(ch)
+            self.task_i = self.dest_i = self.snap_i = 0
+            self._clamp()
 
     # ---- actions
 
@@ -501,8 +563,8 @@ def _draw(scr, app: App) -> None:
     # ---- tasks, grouped into ACTIVE / ARCHIVED sections
     inner1 = w1 - 2
     max_row = body_h - 2
-    sections = [("ACTIVE", [t for t in app.model.tasks if not t.archived]),
-                ("ARCHIVED", [t for t in app.model.tasks if t.archived])]
+    sections = [("ACTIVE", [t for t in app.tasks if not t.archived]),
+                ("ARCHIVED", [t for t in app.tasks if t.archived])]
     task_rows = []
     sel_row = 0
     for header, tasks in sections:
@@ -510,7 +572,7 @@ def _draw(scr, app: App) -> None:
         if not tasks:
             task_rows.append(("  (none)", _C_DIM, False, False))
         for t in tasks:
-            i = app.model.tasks.index(t)
+            i = app.tasks.index(t)
             selected = i == app.task_i
             if selected:
                 sel_row = len(task_rows)
@@ -590,16 +652,25 @@ def _draw(scr, app: App) -> None:
             detail += " | archived %s (%s)" % (
                 job.archived_at, job.archived_reason or "manual")
     scr.addnstr(h - 2, 0, _truncate(detail, w - 1), w - 1, curses.A_DIM)
-    status = app.message or _HELP
-    scr.addnstr(h - 1, 0, _truncate(status, w - 1), w - 1,
-                curses.color_pair(app.message_color) if app.message
-                else curses.A_DIM)
+    if app.searching:
+        n = len(app.tasks)
+        status = "/%s▌  (%d match%s)" % (app.search_query, n,
+                                         "" if n == 1 else "es")
+        scr.addnstr(h - 1, 0, _truncate(status, w - 1), w - 1,
+                    curses.color_pair(_C_YELLOW) | curses.A_BOLD)
+    else:
+        status = app.message or _HELP
+        scr.addnstr(h - 1, 0, _truncate(status, w - 1), w - 1,
+                    curses.color_pair(app.message_color) if app.message
+                    else curses.A_DIM)
     scr.refresh()
 
 
 def _run(scr, conn) -> None:
     curses.curs_set(0)
     scr.keypad(True)
+    if hasattr(curses, "set_escdelay"):    # Python >= 3.9
+        curses.set_escdelay(25)
     _init_colors()
     app = App(conn)
     ui = Ui(scr, app)
@@ -607,10 +678,16 @@ def _run(scr, conn) -> None:
     while True:
         _draw(scr, app)
         ch = scr.getch()
+        if app.searching:
+            app.message = ""
+            app.search_key(ch)
+            continue
         if ch in (ord("q"), ord("Q")):
             break
         app.message = ""
-        if ch in (curses.KEY_DOWN, ord("j")):
+        if ch == ord("/"):
+            app.start_search()
+        elif ch in (curses.KEY_DOWN, ord("j")):
             app.move(1)
         elif ch in (curses.KEY_UP, ord("k")):
             app.move(-1)
