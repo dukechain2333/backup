@@ -113,6 +113,8 @@ class App:
         self.message = ""
         self.message_color = _C_NORMAL
         self.search_query = ""         # task filter; "" shows all tasks
+        self.searching = False         # search input mode active
+        self._presearch_source = None  # selection to restore on Esc
 
     # ---- selection helpers
 
@@ -185,6 +187,52 @@ class App:
 
     def focus(self, col: int) -> None:
         self.col = max(0, min(2, col))
+
+    # ---- search
+
+    def start_search(self) -> None:
+        self.searching = True
+        self.search_query = ""
+        self._presearch_source = self.task.source if self.task else None
+        self.col = 0
+        self.task_i = self.dest_i = self.snap_i = 0
+
+    def _select_source(self, source: Optional[str]) -> None:
+        if source is not None:
+            for i, t in enumerate(self.tasks):
+                if t.source == source:
+                    self.task_i = i
+                    break
+        self._clamp()
+
+    def accept_search(self) -> None:
+        chosen = self.task.source if self.task else self._presearch_source
+        self.searching = False
+        self.search_query = ""
+        self._select_source(chosen)
+
+    def cancel_search(self) -> None:
+        self.searching = False
+        self.search_query = ""
+        self._select_source(self._presearch_source)
+
+    def search_key(self, ch: int) -> None:
+        if ch in (curses.KEY_ENTER, 10, 13):
+            self.accept_search()
+        elif ch == 27:                                    # Esc
+            self.cancel_search()
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            self.search_query = self.search_query[:-1]
+            self.task_i = self.dest_i = self.snap_i = 0
+            self._clamp()
+        elif ch == curses.KEY_DOWN:
+            self.move(1)
+        elif ch == curses.KEY_UP:
+            self.move(-1)
+        elif 32 <= ch < 127:                              # printable ASCII
+            self.search_query += chr(ch)
+            self.task_i = self.dest_i = self.snap_i = 0
+            self._clamp()
 
     # ---- actions
 
