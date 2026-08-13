@@ -97,6 +97,11 @@ def _state_color(state: str) -> int:
     }.get(state, _C_NORMAL)
 
 
+def _match(label: str, query: str) -> bool:
+    """Case-insensitive contiguous substring; empty query matches all."""
+    return query.lower() in label.lower()
+
+
 class App:
     def __init__(self, conn):
         self.conn = conn
@@ -107,13 +112,22 @@ class App:
         self.snap_i = 0
         self.message = ""
         self.message_color = _C_NORMAL
+        self.search_query = ""         # task filter; "" shows all tasks
 
     # ---- selection helpers
 
     @property
+    def tasks(self) -> List[TaskView]:
+        """Tasks visible under the current search filter."""
+        if not self.search_query:
+            return self.model.tasks
+        return [t for t in self.model.tasks
+                if _match(t.label, self.search_query)]
+
+    @property
     def task(self) -> Optional[TaskView]:
-        if 0 <= self.task_i < len(self.model.tasks):
-            return self.model.tasks[self.task_i]
+        if 0 <= self.task_i < len(self.tasks):
+            return self.tasks[self.task_i]
         return None
 
     @property
@@ -135,7 +149,7 @@ class App:
         self.model = load_model(self.conn)
         self.task_i = 0
         if selected is not None:
-            for i, t in enumerate(self.model.tasks):
+            for i, t in enumerate(self.tasks):
                 if t.source == selected:
                     self.task_i = i
                     break
@@ -146,7 +160,7 @@ class App:
                       % ", ".join(self.model.auto_archived), _C_YELLOW)
 
     def _clamp(self) -> None:
-        self.task_i = max(0, min(self.task_i, len(self.model.tasks) - 1))
+        self.task_i = max(0, min(self.task_i, len(self.tasks) - 1))
         n_dest = len(self.task.dests) if self.task else 0
         self.dest_i = max(0, min(self.dest_i, n_dest - 1))
         n_snap = len(self.dest.snapshots) if self.dest else 0

@@ -271,3 +271,45 @@ def test_app_import_bad_path_shows_error(tmp_path, monkeypatch):
     app.do_import(FakeUi(text=str(tmp_path / "random")))
     assert "neither" in app.message
     assert app.model.tasks == []
+
+
+# ---------------------------------------------------------------- search
+
+
+def _task(label, archived=False):
+    return tui.TaskView(source="/src/" + label, label=label,
+                        archived=archived)
+
+
+def _filter_app(labels, query=""):
+    """App over a hand-built model; conn unused by the filter code paths."""
+    app = tui.App(None)
+    app.model = tui.Model(tasks=[_task(l) for l in labels])
+    app.search_query = query
+    return app
+
+
+def test_match_is_case_insensitive_substring():
+    assert tui._match("hyper-sagnn", "SAGNN")
+    assert tui._match("hypersagnn-dn", "sagnn")
+    assert not tui._match("hypersagnn-dn", "hsd")   # no fuzzy subsequence
+    assert tui._match("anything", "")               # empty query matches all
+
+
+def test_tasks_property_filters_by_query():
+    app = _filter_app(["esco", "hyper-sagnn", "hypersagnn-dn"], "sagnn")
+    assert [t.label for t in app.tasks] == ["hyper-sagnn", "hypersagnn-dn"]
+    app.search_query = ""
+    assert [t.label for t in app.tasks] == [
+        "esco", "hyper-sagnn", "hypersagnn-dn"]
+
+
+def test_selection_stays_in_bounds_when_filter_empties_list():
+    app = _filter_app(["esco", "metacell"])
+    app.task_i = 1
+    app.search_query = "zzz"
+    app._clamp()
+    assert app.tasks == []
+    assert app.task is None
+    assert app.dest is None
+    assert app.snap is None
