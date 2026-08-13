@@ -84,8 +84,8 @@ _C_YELLOW = 4
 _C_DIM = 5
 _C_SEL_RED = 6
 
-_HELP = ("[Enter/←→] navigate  [r]estore  [v]erify  [a]rchive  [u]narchive  "
-         "[i]mport  [d]elete  [g] refresh  [q]uit")
+_HELP = ("[/] search  [Enter/←→] navigate  [r]estore  [v]erify  [a]rchive  "
+         "[u]narchive  [i]mport  [d]elete  [g] refresh  [q]uit")
 
 
 def _state_color(state: str) -> int:
@@ -563,8 +563,8 @@ def _draw(scr, app: App) -> None:
     # ---- tasks, grouped into ACTIVE / ARCHIVED sections
     inner1 = w1 - 2
     max_row = body_h - 2
-    sections = [("ACTIVE", [t for t in app.model.tasks if not t.archived]),
-                ("ARCHIVED", [t for t in app.model.tasks if t.archived])]
+    sections = [("ACTIVE", [t for t in app.tasks if not t.archived]),
+                ("ARCHIVED", [t for t in app.tasks if t.archived])]
     task_rows = []
     sel_row = 0
     for header, tasks in sections:
@@ -572,7 +572,7 @@ def _draw(scr, app: App) -> None:
         if not tasks:
             task_rows.append(("  (none)", _C_DIM, False, False))
         for t in tasks:
-            i = app.model.tasks.index(t)
+            i = app.tasks.index(t)
             selected = i == app.task_i
             if selected:
                 sel_row = len(task_rows)
@@ -652,16 +652,25 @@ def _draw(scr, app: App) -> None:
             detail += " | archived %s (%s)" % (
                 job.archived_at, job.archived_reason or "manual")
     scr.addnstr(h - 2, 0, _truncate(detail, w - 1), w - 1, curses.A_DIM)
-    status = app.message or _HELP
-    scr.addnstr(h - 1, 0, _truncate(status, w - 1), w - 1,
-                curses.color_pair(app.message_color) if app.message
-                else curses.A_DIM)
+    if app.searching:
+        n = len(app.tasks)
+        status = "/%s▌  (%d match%s)" % (app.search_query, n,
+                                         "" if n == 1 else "es")
+        scr.addnstr(h - 1, 0, _truncate(status, w - 1), w - 1,
+                    curses.color_pair(_C_YELLOW) | curses.A_BOLD)
+    else:
+        status = app.message or _HELP
+        scr.addnstr(h - 1, 0, _truncate(status, w - 1), w - 1,
+                    curses.color_pair(app.message_color) if app.message
+                    else curses.A_DIM)
     scr.refresh()
 
 
 def _run(scr, conn) -> None:
     curses.curs_set(0)
     scr.keypad(True)
+    if hasattr(curses, "set_escdelay"):    # Python >= 3.9
+        curses.set_escdelay(25)
     _init_colors()
     app = App(conn)
     ui = Ui(scr, app)
@@ -669,10 +678,16 @@ def _run(scr, conn) -> None:
     while True:
         _draw(scr, app)
         ch = scr.getch()
+        if app.searching:
+            app.message = ""
+            app.search_key(ch)
+            continue
         if ch in (ord("q"), ord("Q")):
             break
         app.message = ""
-        if ch in (curses.KEY_DOWN, ord("j")):
+        if ch == ord("/"):
+            app.start_search()
+        elif ch in (curses.KEY_DOWN, ord("j")):
             app.move(1)
         elif ch in (curses.KEY_UP, ord("k")):
             app.move(-1)

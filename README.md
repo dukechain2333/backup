@@ -95,10 +95,12 @@ Importing never writes to the backup drive; name collisions are skipped.
   **LOST** in red. (On-disk snapshots the DB doesn't know about — e.g. from
   an older version — are adopted silently.)
 
-Keys: arrows / `hjkl` / Tab to navigate, `r` restore, `v` verify snapshot
-fingerprints, `a` archive, `u` unarchive, `i` import an existing backup
-location (prompts for a path; same detection as `backup import`), `d` delete
-an archived task (choosing keep or purge snapshots), `g` refresh, `q` quit.
+Keys: arrows / `hjkl` / Tab to navigate, `/` incremental task search (type
+to filter, Enter to jump to the match, Esc to cancel), `r` restore, `v`
+verify snapshot fingerprints, `a` archive, `u` unarchive, `i` import an
+existing backup location (prompts for a path; same detection as
+`backup import`), `d` delete an archived task (choosing keep or purge
+snapshots), `g` refresh, `q` quit.
 
 **Restore** (`r`) copies the selected snapshot — or the newest one present,
 when pressed on a task/destination — to an editable target path, prefilled
