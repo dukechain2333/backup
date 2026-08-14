@@ -281,3 +281,53 @@ def test_force_snapshots_even_when_unchanged(tmp_path):
     res = run_backup(job, now=datetime(2026, 6, 29, 2, 0, 0), force=True)
     assert res.status == "ok"
     assert len(list_snapshots(job)) == 2
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_rsync_omits_symlink_times(tmp_path, monkeypatch):
+    """Destinations without lutimes() (sshfs, some network mounts) make rsync
+    follow a symlink to set its times; when the target is outside the backed-up
+    tree the link dangles there and rsync fails the whole run with code 23."""
+    import subprocess as _sp
+
+    from backup import runner as _runner
+
+    job = make_job(tmp_path)
+    calls = []
+    real_run = _sp.run
+
+    def spy(cmd, **kwargs):
+        calls.append(list(cmd))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(_runner.subprocess, "run", spy)
+    res = run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    assert res.status == "ok"
+    transfers = [c for c in calls if c[0] == "rsync" and "-n" not in c]
+    assert transfers, "no rsync transfer command was issued"
+    for cmd in transfers:
+        assert "--omit-link-times" in cmd
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_snapshot_keeps_symlink_pointing_outside_the_source(tmp_path):
+    job = make_job(tmp_path)
+    src = Path(job.source)
+    (src / "sub").mkdir()
+    (src / "sub" / "gene.npz").symlink_to("../../elsewhere/gene.npz")
+    res = run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    assert res.status == "ok"
+    link = list_snapshots(job)[0] / "sub" / "gene.npz"
+    assert link.is_symlink()
+    assert os.readlink(link) == "../../elsewhere/gene.npz"
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_symlink_only_tree_is_unchanged_on_the_second_run(tmp_path):
+    """The change check must ignore exactly what the transfer omits: link
+    times are never synced, so they must not read as a change forever."""
+    job = make_job(tmp_path)
+    (Path(job.source) / "gene.npz").symlink_to("../elsewhere/gene.npz")
+    run_backup(job, now=datetime(2026, 6, 28, 2, 0, 0))
+    res = run_backup(job, now=datetime(2026, 6, 29, 2, 0, 0))
+    assert res.status == "unchanged"

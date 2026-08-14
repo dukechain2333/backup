@@ -15,6 +15,11 @@ from . import db, integrity, paths
 TIMESTAMP_FMT = "%Y-%m-%d_%H-%M-%S"
 _RSYNC_OK = {0, 24}  # 24 = some source files vanished during transfer
 IGNORE_FILTER = ["--filter", "dir-merge,- .backupignore"]
+# Destinations without lutimes() (sshfs and some network mounts) make rsync
+# follow a symlink to set its times. A link whose target sits outside the
+# backed-up tree dangles there, the timestamp call fails with ENOENT, and
+# rsync ends the whole run with code 23. Link times are not worth a job.
+LINK_TIMES_FLAG = ["--omit-link-times"]
 
 
 @dataclass
@@ -161,7 +166,7 @@ def run_backup(
             job, conn, now, "unchanged",
             "no changes since %s; snapshot skipped" % previous[-1].name, None)
 
-    cmd = ["rsync", "-a", "--delete", *IGNORE_FILTER]
+    cmd = ["rsync", "-a", *LINK_TIMES_FLAG, "--delete", *IGNORE_FILTER]
     if previous:
         cmd.append("--link-dest=%s" % previous[-1])
     cmd.append("%s/" % source)
